@@ -18,13 +18,7 @@ import {Errors} from "../common/Errors.sol";
  * Funds are deposited externally.
  * Contract is pausable and upgradeable (UUPS).
  */
-contract RewardDistributor is
-    IRewardDistributor,
-    ReentrancyGuard,
-    Pausable,
-    AccessControl,
-    UUPSUpgradeable
-{
+contract RewardDistributor is IRewardDistributor, ReentrancyGuard, Pausable, AccessControl, UUPSUpgradeable {
     using SafeERC20 for IERC20;
     using Math for uint256;
 
@@ -41,7 +35,7 @@ contract RewardDistributor is
     struct NodeInfo {
         uint256 contributionScore;
         uint256 rewardDebt; // Stores accumulatedRewardsPerScoreUnit * contributionScore at last update
-        // `lastUpdateTime` from PRD is implicitly handled by rewardDebt calculation
+            // `lastUpdateTime` from PRD is implicitly handled by rewardDebt calculation
     }
 
     IERC20 public immutable rewardToken; // e.g., USDC
@@ -89,10 +83,7 @@ contract RewardDistributor is
      * Can only be called by the DEFAULT_ADMIN_ROLE.
      * @param _rate The new reward rate (scaled by REWARD_PRECISION).
      */
-    function setRewardRate(uint256 _rate)
-        external
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
+    function setRewardRate(uint256 _rate) external onlyRole(DEFAULT_ADMIN_ROLE) {
         _updateGlobalRewards(); // Update based on the old rate first
         currentRewardRate = _rate;
         emit RewardRateSet(_rate);
@@ -104,12 +95,7 @@ contract RewardDistributor is
      * Requires the contract not to be paused.
      * @param amount The amount of reward tokens to deposit.
      */
-    function depositRewards(uint256 amount)
-        external
-        nonReentrant
-        whenNotPaused
-        onlyRole(REWARD_DEPOSITOR_ROLE)
-    {
+    function depositRewards(uint256 amount) external nonReentrant whenNotPaused onlyRole(REWARD_DEPOSITOR_ROLE) {
         if (amount == 0) revert Errors.InvalidAmount(amount);
         rewardToken.safeTransferFrom(_msgSender(), address(this), amount);
         emit RewardsDeposited(_msgSender(), amount);
@@ -175,11 +161,7 @@ contract RewardDistributor is
      * @dev Allows a node operator (msg.sender) to claim their accrued rewards.
      * Requires the contract not to be paused.
      */
-    function claimRewards()
-        external
-        nonReentrant
-        whenNotPaused
-    {
+    function claimRewards() external nonReentrant whenNotPaused {
         address operator = _msgSender();
         _updateNodeRewards(operator); // Settle rewards for the caller
 
@@ -187,14 +169,15 @@ contract RewardDistributor is
         if (pending == 0) revert Errors.NoRewardsClaimable();
 
         // Reset reward debt to current state after claiming
-        nodeInfo[operator].rewardDebt = (nodeInfo[operator].contributionScore * accumulatedRewardsPerScoreUnit) / REWARD_PRECISION;
+        nodeInfo[operator].rewardDebt =
+            (nodeInfo[operator].contributionScore * accumulatedRewardsPerScoreUnit) / REWARD_PRECISION;
 
         // Check balance before transfer
         uint256 balance = rewardToken.balanceOf(address(this));
         if (pending > balance) {
-           // Optional: Revert or only send available balance?
-           // Reverting for safety as deposits might be delayed.
-           revert Errors.InsufficientFundsForRewards();
+            // Optional: Revert or only send available balance?
+            // Reverting for safety as deposits might be delayed.
+            revert Errors.InsufficientFundsForRewards();
         }
 
         rewardToken.safeTransfer(operator, pending);
@@ -225,12 +208,12 @@ contract RewardDistributor is
      * Calculates pending rewards and updates their reward debt.
      * Calls `_updateGlobalRewards` first.
      */
-    function _updateNodeRewards(address /*operator*/) internal virtual {
+    function _updateNodeRewards(address /*operator*/ ) internal virtual {
         _updateGlobalRewards(); // Ensure global state is current
-        // Pending rewards calculation is done in claimableRewards / claimRewards
-        // We just need to ensure the global state is updated before calculating
-        // or before updating the user's score.
-        // Reward debt is updated when score changes or when rewards are claimed.
+            // Pending rewards calculation is done in claimableRewards / claimRewards
+            // We just need to ensure the global state is updated before calculating
+            // or before updating the user's score.
+            // Reward debt is updated when score changes or when rewards are claimed.
     }
 
     /**
@@ -253,11 +236,7 @@ contract RewardDistributor is
      * @dev Authorizes an upgrade for the UUPS pattern.
      * Requires the caller to have the UPGRADER_ROLE.
      */
-    function _authorizeUpgrade(address newImplementation)
-        internal
-        override
-        onlyRole(UPGRADER_ROLE)
-    {}
+    function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
 
     // The following functions are overrides required by Solidity.
     // Removed: _update override is not needed for AccessControl/Pausable V5
@@ -267,5 +246,4 @@ contract RewardDistributor is
     // {
     //     super._update(from, to, value);
     // }
-
-} 
+}

@@ -18,4 +18,4 @@ interface ICarbonCreditToken {
      * @param amount The amount of tokens to mint.
      */
     function mintToTreasury(uint256 amount) external;
-} 
+}

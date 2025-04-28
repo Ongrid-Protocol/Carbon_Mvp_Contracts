@@ -44,4 +44,4 @@ interface IRewardDistributor {
      * @return The amount of reward tokens claimable.
      */
     function claimableRewards(address operator) external view returns (uint256);
-} 
+}

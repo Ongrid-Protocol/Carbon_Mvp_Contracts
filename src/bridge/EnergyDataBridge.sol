@@ -29,10 +29,10 @@ contract EnergyDataBridge is
      * @dev Represents a single energy data entry within a batch.
      */
     struct EnergyData {
-        bytes32 deviceId;           // Unique identifier for the energy-generating device
+        bytes32 deviceId; // Unique identifier for the energy-generating device
         address nodeOperatorAddress; // Address of the operator responsible for the node/device
-        uint256 energyKWh;         // Energy produced in kWh (no decimals)
-        uint64 timestamp;           // Unix timestamp of the data reading or aggregation period end
+        uint256 energyKWh; // Energy produced in kWh (no decimals)
+        uint64 timestamp; // Unix timestamp of the data reading or aggregation period end
     }
 
     ICarbonCreditToken public carbonCreditToken;
@@ -55,11 +55,10 @@ contract EnergyDataBridge is
     /**
      * @dev Emitted when a batch of energy data has been successfully processed.
      */
-    event EnergyDataProcessed(
-        bytes32 indexed batchHash,     // Hash of the processed batch data
-        uint256 totalCreditsMinted, // Total carbon credits minted for this batch (scaled by token decimals)
-        uint256 entriesProcessed     // Number of entries in the processed batch
-    );
+    event EnergyDataProcessed( // Hash of the processed batch data
+        // Total carbon credits minted for this batch (scaled by token decimals)
+        // Number of entries in the processed batch
+    bytes32 indexed batchHash, uint256 totalCreditsMinted, uint256 entriesProcessed);
 
     /**
      * @dev Modifier to check if caller has the DATA_SUBMITTER_ROLE.
@@ -107,10 +106,7 @@ contract EnergyDataBridge is
      * Can only be called by the DEFAULT_ADMIN_ROLE.
      * @param _factor The new emission factor (grams CO2e * 1e6 / kWh). Must be greater than 0.
      */
-    function setEmissionFactor(uint256 _factor)
-        external
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
+    function setEmissionFactor(uint256 _factor) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (_factor == 0) revert Errors.InvalidEmissionFactor();
         uint256 oldFactor = emissionFactor;
         emissionFactor = _factor;
@@ -141,7 +137,7 @@ contract EnergyDataBridge is
         // This avoids multiple calls to rewardDistributor for the same operator within a batch
         // mapping(address => uint256) batchContributions; // Removed: Unused in current implementation
 
-        for (uint i = 0; i < numEntries; ++i) {
+        for (uint256 i = 0; i < numEntries; ++i) {
             EnergyData calldata entry = dataBatch[i];
 
             // Basic validation
@@ -198,11 +194,7 @@ contract EnergyDataBridge is
      * @dev Authorizes an upgrade for the UUPS pattern.
      * Requires the caller to have the UPGRADER_ROLE.
      */
-    function _authorizeUpgrade(address newImplementation)
-        internal
-        override
-        onlyRole(UPGRADER_ROLE)
-    {}
+    function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
 
     // The following functions are overrides required by Solidity.
     // Removed: _update override is not needed for AccessControl/Pausable V5
@@ -212,4 +204,4 @@ contract EnergyDataBridge is
     // {
     //     super._update(from, to, value);
     // }
-} 
+}

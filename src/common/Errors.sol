@@ -21,4 +21,4 @@ library Errors {
     error CallerNotDataSubmitter();
     error CallerNotRewardDepositor();
     error CallerNotMetricUpdater();
-} 
+}

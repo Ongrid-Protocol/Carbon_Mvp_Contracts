@@ -45,12 +45,9 @@ contract CarbonCreditToken is
      * @param _initialAdmin The address to grant DEFAULT_ADMIN_ROLE, PAUSER_ROLE, and UPGRADER_ROLE.
      * @param _protocolTreasury The address of the protocol treasury.
      */
-    constructor(
-        string memory name,
-        string memory symbol,
-        address _initialAdmin,
-        address _protocolTreasury
-    ) ERC20(name, symbol) {
+    constructor(string memory name, string memory symbol, address _initialAdmin, address _protocolTreasury)
+        ERC20(name, symbol)
+    {
         if (_initialAdmin == address(0)) revert Errors.ZeroAddress();
         if (_protocolTreasury == address(0)) revert Errors.ZeroAddress();
 
@@ -68,10 +65,7 @@ contract CarbonCreditToken is
      * Can only be called by the DEFAULT_ADMIN_ROLE.
      * @param _newTreasury The new address for the protocol treasury.
      */
-    function setProtocolTreasury(address _newTreasury)
-        external
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
+    function setProtocolTreasury(address _newTreasury) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (_newTreasury == address(0)) revert Errors.ZeroAddress();
         protocolTreasury = _newTreasury;
         emit ProtocolTreasuryChanged(_newTreasury);
@@ -92,12 +86,7 @@ contract CarbonCreditToken is
      * Emits a {Transfer} event with `from` set to the zero address.
      * @param amount The amount of tokens to mint.
      */
-    function mintToTreasury(uint256 amount)
-        external
-        virtual
-        whenNotPaused
-        onlyMinter
-    {
+    function mintToTreasury(uint256 amount) external virtual whenNotPaused onlyMinter {
         _mint(protocolTreasury, amount);
     }
 
@@ -121,10 +110,7 @@ contract CarbonCreditToken is
      * @dev Hook that is called before any transfer of tokens. This includes minting and burning.
      * Makes transfers pausable.
      */
-    function _update(address from, address to, uint256 value)
-        internal
-        override(ERC20)
-    {
+    function _update(address from, address to, uint256 value) internal override(ERC20) {
         super._update(from, to, value);
     }
 
@@ -132,11 +118,7 @@ contract CarbonCreditToken is
      * @dev Authorizes an upgrade for the UUPS pattern.
      * Requires the caller to have the UPGRADER_ROLE.
      */
-    function _authorizeUpgrade(address newImplementation)
-        internal
-        override
-        onlyRole(UPGRADER_ROLE)
-    {}
+    function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
 
     // The following functions are overrides required by Solidity.
 
@@ -157,4 +139,4 @@ contract CarbonCreditToken is
     // {
     //     super._burn(account, amount);
     // }
-} 
+}
