@@ -38,12 +38,7 @@ interface ICarbonCreditExchange {
     /**
      * @dev Emitted when credits are exchanged for USDC.
      */
-    event CreditsExchanged(
-        address indexed user, 
-        uint256 creditAmount, 
-        uint256 usdcAmount, 
-        uint256 feeAmount
-    );
+    event CreditsExchanged(address indexed user, uint256 creditAmount, uint256 usdcAmount, uint256 feeAmount);
 
     /**
      * @dev Emitted when the rewards pool is funded.
@@ -128,4 +123,4 @@ interface ICarbonCreditExchange {
      * @param enabled Whether to enable or disable the exchange.
      */
     function setExchangeEnabled(bool enabled) external;
-} 
+}

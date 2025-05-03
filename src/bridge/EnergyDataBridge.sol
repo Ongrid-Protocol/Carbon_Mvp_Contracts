@@ -17,12 +17,7 @@ import {Errors} from "../common/Errors.sol";
  * Includes P2P consensus verification and data challenge mechanism.
  * Pausable and upgradeable (UUPS).
  */
-contract EnergyDataBridge is
-    AccessControl,
-    Pausable,
-    ReentrancyGuard,
-    UUPSUpgradeable
-{
+contract EnergyDataBridge is AccessControl, Pausable, ReentrancyGuard, UUPSUpgradeable {
     using ECDSA for bytes32;
 
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
@@ -82,25 +77,25 @@ contract EnergyDataBridge is
 
     // Mapping to prevent replay attacks by storing hashes of processed batches
     mapping(bytes32 => bool) public processedBatchHashes;
-    
+
     // Mapping to store registered P2P nodes
     mapping(bytes32 => RegisteredNode) public registeredNodes;
-    
+
     // Array of peer IDs for enumeration
     bytes32[] public peerIds;
-    
+
     // Required nodes for consensus (minimum threshold)
     uint256 public requiredConsensusNodes;
-    
+
     // Batch challenges
     mapping(bytes32 => BatchChallenge) public batchChallenges;
-    
+
     // Batch data storage for challenge resolution
     mapping(bytes32 => EnergyData[]) public storedBatches;
-    
+
     // Batch processing delay (time window for challenges)
     uint256 public batchProcessingDelay;
-    
+
     // Batch submission timestamps
     mapping(bytes32 => uint256) public batchSubmissionTimes;
 
@@ -112,53 +107,32 @@ contract EnergyDataBridge is
     /**
      * @dev Emitted when a batch of energy data has been successfully processed.
      */
-    event EnergyDataProcessed(
-        bytes32 indexed batchHash, 
-        uint256 totalCreditsMinted, 
-        uint256 entriesProcessed
-    );
+    event EnergyDataProcessed(bytes32 indexed batchHash, uint256 totalCreditsMinted, uint256 entriesProcessed);
 
     /**
      * @dev Emitted when a batch of energy data has been submitted but awaits processing.
      */
-    event EnergyDataSubmitted(
-        bytes32 indexed batchHash, 
-        uint256 entriesSubmitted,
-        uint256 processAfterTimestamp
-    );
+    event EnergyDataSubmitted(bytes32 indexed batchHash, uint256 entriesSubmitted, uint256 processAfterTimestamp);
 
     /**
      * @dev Emitted when a P2P node is registered.
      */
-    event NodeRegistered(
-        bytes32 indexed peerId,
-        address indexed operator
-    );
+    event NodeRegistered(bytes32 indexed peerId, address indexed operator);
 
     /**
      * @dev Emitted when a node's status is updated.
      */
-    event NodeStatusUpdated(
-        bytes32 indexed peerId,
-        bool isActive
-    );
+    event NodeStatusUpdated(bytes32 indexed peerId, bool isActive);
 
     /**
      * @dev Emitted when a batch is challenged.
      */
-    event BatchChallenged(
-        bytes32 indexed batchHash,
-        address indexed challenger,
-        string reason
-    );
+    event BatchChallenged(bytes32 indexed batchHash, address indexed challenger, string reason);
 
     /**
      * @dev Emitted when a challenge is resolved.
      */
-    event ChallengeResolved(
-        bytes32 indexed batchHash,
-        bool isUpheld
-    );
+    event ChallengeResolved(bytes32 indexed batchHash, bool isUpheld);
 
     /**
      * @dev Modifier to check if caller has the DATA_SUBMITTER_ROLE.
@@ -257,18 +231,14 @@ contract EnergyDataBridge is
     function registerNode(bytes32 _peerId, address _operator) external onlyNodeManager {
         if (_peerId == bytes32(0)) revert Errors.InvalidPeerId();
         if (_operator == address(0)) revert Errors.ZeroAddress();
-        
+
         if (registeredNodes[_peerId].operator == address(0)) {
             // New node
             peerIds.push(_peerId);
         }
-        
-        registeredNodes[_peerId] = RegisteredNode({
-            operator: _operator,
-            peerId: _peerId,
-            isActive: true
-        });
-        
+
+        registeredNodes[_peerId] = RegisteredNode({operator: _operator, peerId: _peerId, isActive: true});
+
         emit NodeRegistered(_peerId, _operator);
     }
 
@@ -280,9 +250,9 @@ contract EnergyDataBridge is
      */
     function updateNodeStatus(bytes32 _peerId, bool _isActive) external onlyNodeManager {
         if (registeredNodes[_peerId].operator == address(0)) revert Errors.NodeNotRegistered();
-        
+
         registeredNodes[_peerId].isActive = _isActive;
-        
+
         emit NodeStatusUpdated(_peerId, _isActive);
     }
 
@@ -300,34 +270,31 @@ contract EnergyDataBridge is
      * @param dataBatch An array of EnergyData structs.
      * @param consensusProof The P2P consensus proof for this batch.
      */
-    function submitEnergyDataBatch(
-        EnergyData[] calldata dataBatch,
-        P2PConsensusProof calldata consensusProof
-    )
+    function submitEnergyDataBatch(EnergyData[] calldata dataBatch, P2PConsensusProof calldata consensusProof)
         external
         nonReentrant
         whenNotPaused
         onlyDataSubmitter
     {
         bytes32 batchHash = keccak256(abi.encode(dataBatch));
-        
+
         if (processedBatchHashes[batchHash]) revert Errors.BatchAlreadyProcessed();
         if (batchSubmissionTimes[batchHash] != 0) revert Errors.BatchAlreadySubmitted();
-        
+
         // Verify consensus proof
         if (!_verifyP2PConsensus(dataBatch, consensusProof)) revert Errors.InvalidConsensusProof();
-        
+
         // Store the batch data for later processing
         EnergyData[] storage batchData = storedBatches[batchHash];
-        
+
         for (uint256 i = 0; i < dataBatch.length; ++i) {
             batchData.push(dataBatch[i]);
         }
-        
+
         // Record submission time
         uint256 processAfter = block.timestamp + batchProcessingDelay;
         batchSubmissionTimes[batchHash] = processAfter;
-        
+
         emit EnergyDataSubmitted(batchHash, dataBatch.length, processAfter);
     }
 
@@ -335,28 +302,22 @@ contract EnergyDataBridge is
      * @dev Processes a previously submitted batch after the challenge period has passed.
      * @param batchHash The hash of the batch to process.
      */
-    function processBatch(bytes32 batchHash) 
-        external
-        nonReentrant
-        whenNotPaused
-    {
+    function processBatch(bytes32 batchHash) external nonReentrant whenNotPaused {
         uint256 submissionTime = batchSubmissionTimes[batchHash];
         if (submissionTime == 0) revert Errors.BatchNotSubmitted();
         if (block.timestamp < submissionTime) revert Errors.ChallengePeriodNotOver();
         if (processedBatchHashes[batchHash]) revert Errors.BatchAlreadyProcessed();
-        
+
         // Check if there's an unresolved challenge
-        if (batchChallenges[batchHash].challenger != address(0) && 
-            !batchChallenges[batchHash].isResolved) {
+        if (batchChallenges[batchHash].challenger != address(0) && !batchChallenges[batchHash].isResolved) {
             revert Errors.UnresolvedChallenge();
         }
-        
+
         // Check if challenge was upheld
-        if (batchChallenges[batchHash].isResolved && 
-            batchChallenges[batchHash].isUpheld) {
+        if (batchChallenges[batchHash].isResolved && batchChallenges[batchHash].isUpheld) {
             revert Errors.BatchChallengeUpheld();
         }
-        
+
         EnergyData[] storage dataBatch = storedBatches[batchHash];
         uint256 batchTotalCreditsMinted = 0;
         uint256 numEntries = dataBatch.length;
@@ -377,11 +338,7 @@ contract EnergyDataBridge is
 
             // Update node contribution in reward distributor
             if (entry.nodeOperatorAddress != address(0) && entry.energyKWh > 0) {
-                rewardDistributor.updateNodeContribution(
-                    entry.nodeOperatorAddress, 
-                    entry.energyKWh, 
-                    entry.timestamp
-                );
+                rewardDistributor.updateNodeContribution(entry.nodeOperatorAddress, entry.energyKWh, entry.timestamp);
             }
         }
 
@@ -390,10 +347,10 @@ contract EnergyDataBridge is
         }
 
         processedBatchHashes[batchHash] = true;
-        
+
         // Cleanup - Keep batch data for audit but can be optimized for gas in production
         // delete storedBatches[batchHash];
-        
+
         emit EnergyDataProcessed(batchHash, batchTotalCreditsMinted, numEntries);
     }
 
@@ -402,17 +359,13 @@ contract EnergyDataBridge is
      * @param batchHash The hash of the batch to challenge.
      * @param reason The reason for the challenge.
      */
-    function challengeBatch(bytes32 batchHash, string calldata reason) 
-        external
-        nonReentrant
-        whenNotPaused
-    {
+    function challengeBatch(bytes32 batchHash, string calldata reason) external nonReentrant whenNotPaused {
         uint256 submissionTime = batchSubmissionTimes[batchHash];
         if (submissionTime == 0) revert Errors.BatchNotSubmitted();
         if (block.timestamp >= submissionTime) revert Errors.ChallengePeriodOver();
         if (processedBatchHashes[batchHash]) revert Errors.BatchAlreadyProcessed();
         if (batchChallenges[batchHash].challenger != address(0)) revert Errors.BatchAlreadyChallenged();
-        
+
         // Create challenge
         batchChallenges[batchHash] = BatchChallenge({
             challenger: msg.sender,
@@ -422,7 +375,7 @@ contract EnergyDataBridge is
             isResolved: false,
             isUpheld: false
         });
-        
+
         emit BatchChallenged(batchHash, msg.sender, reason);
     }
 
@@ -432,22 +385,19 @@ contract EnergyDataBridge is
      * @param batchHash The hash of the challenged batch.
      * @param isUpheld Whether the challenge is upheld (true) or rejected (false).
      */
-    function resolveChallenge(bytes32 batchHash, bool isUpheld) 
-        external
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
+    function resolveChallenge(bytes32 batchHash, bool isUpheld) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (batchChallenges[batchHash].challenger == address(0)) revert Errors.ChallengeNotFound();
         if (batchChallenges[batchHash].isResolved) revert Errors.ChallengeAlreadyResolved();
-        
+
         batchChallenges[batchHash].isResolved = true;
         batchChallenges[batchHash].isUpheld = isUpheld;
-        
+
         // If challenge is upheld, extend or reset the processing time
         if (isUpheld) {
             // Invalidate the batch completely
             delete batchSubmissionTimes[batchHash];
         }
-        
+
         emit ChallengeResolved(batchHash, isUpheld);
     }
 
@@ -458,25 +408,23 @@ contract EnergyDataBridge is
      * @param consensusProof The consensus proof to verify.
      * @return Whether the consensus is valid.
      */
-    function _verifyP2PConsensus(
-        EnergyData[] calldata dataBatch,
-        P2PConsensusProof calldata consensusProof
-    ) internal view returns (bool) {
+    function _verifyP2PConsensus(EnergyData[] calldata dataBatch, P2PConsensusProof calldata consensusProof)
+        internal
+        view
+        returns (bool)
+    {
         // Ensure enough nodes participated
         if (consensusProof.participatingNodeCount < requiredConsensusNodes) {
             return false;
         }
-        
+
         // Verify that consensus hash matches data batch
-        bytes32 expectedHash = keccak256(abi.encode(
-            consensusProof.consensusRoundId,
-            keccak256(abi.encode(dataBatch))
-        ));
-        
+        bytes32 expectedHash = keccak256(abi.encode(consensusProof.consensusRoundId, keccak256(abi.encode(dataBatch))));
+
         if (expectedHash != consensusProof.consensusResultHash) {
             return false;
         }
-        
+
         // For MVP, we implement a simplified verification
         // In production, this would validate multi-signatures against registered nodes
         return true;

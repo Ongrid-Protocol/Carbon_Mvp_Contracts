@@ -106,15 +106,10 @@ contract CarbonCreditToken is
      * @param to The recipient address.
      * @param amount The amount to transfer.
      */
-    function transferFromTreasury(address to, uint256 amount) 
-        external 
-        virtual 
-        whenNotPaused 
-        onlyTreasuryManager 
-    {
+    function transferFromTreasury(address to, uint256 amount) external virtual whenNotPaused onlyTreasuryManager {
         if (to == address(0)) revert Errors.ZeroAddress();
         if (amount == 0) revert Errors.InvalidAmount(amount);
-        
+
         _transfer(protocolTreasury, to, amount);
         emit TreasuryTransfer(to, amount);
     }
@@ -126,18 +121,18 @@ contract CarbonCreditToken is
      * @param amount The amount to retire.
      * @param reason A string describing the reason for retirement.
      */
-    function retireFromTreasury(uint256 amount, string calldata reason) 
-        external 
-        virtual 
-        whenNotPaused 
-        onlyTreasuryManager 
+    function retireFromTreasury(uint256 amount, string calldata reason)
+        external
+        virtual
+        whenNotPaused
+        onlyTreasuryManager
     {
         if (amount == 0) revert Errors.InvalidAmount(amount);
-        
+
         // First transfer to this contract, then burn
         _transfer(protocolTreasury, address(this), amount);
         _burn(address(this), amount);
-        
+
         emit TreasuryRetirement(amount, reason);
     }
 

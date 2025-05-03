@@ -18,13 +18,7 @@ import {Errors} from "../common/Errors.sol";
  * Connects the credit system to the reward distribution system.
  * Supports both real USDC and mock USDC for testing.
  */
-contract CarbonCreditExchange is
-    ICarbonCreditExchange,
-    AccessControl,
-    Pausable,
-    ReentrancyGuard,
-    UUPSUpgradeable
-{
+contract CarbonCreditExchange is ICarbonCreditExchange, AccessControl, Pausable, ReentrancyGuard, UUPSUpgradeable {
     using SafeERC20 for IERC20;
 
     // Roles
@@ -38,29 +32,29 @@ contract CarbonCreditExchange is
     ICarbonCreditToken public carbonCreditToken;
     IRewardDistributor public rewardDistributor;
     IERC20 public usdcToken;
-    
+
     // Exchange rate: amount of USDC (in smallest units) per carbon credit token
     // 1 carbon credit = exchangeRate * 1e-6 USDC
     // Example: exchangeRate = 25_000_000 means 1 carbon credit = 25 USDC
     uint256 public exchangeRate;
-    
+
     // Protocol fee percentage (scaled by 1e6)
     // Example: 150_000 represents a 15% fee
     uint256 public protocolFeePercentage;
-    
+
     // Percentage of protocol fee that goes to reward distributor (scaled by 1e6)
     // Example: 600_000 represents 60% of the fee
     uint256 public rewardDistributorPercentage;
-    
+
     // Tracks total exchange volume
     uint256 public totalCreditsExchanged;
     uint256 public totalUsdcCollected;
     uint256 public totalProtocolFees;
     uint256 public totalRewardsFunded;
-    
+
     // Exchange enabled/disabled flag
     bool public exchangeEnabled;
-    
+
     /**
      * @dev Sets up the exchange contract with initial parameters.
      * @param _carbonCreditToken The CarbonCreditToken contract address.
@@ -85,12 +79,14 @@ contract CarbonCreditExchange is
         if (_usdcToken == address(0)) revert Errors.ZeroAddress();
         if (_initialAdmin == address(0)) revert Errors.ZeroAddress();
         if (_initialExchangeRate == 0) revert Errors.InvalidExchangeRate();
-        
+
         // 1e6 = 100%, so ensure the fee is < 1e6 (100%)
         if (_initialProtocolFee >= 1_000_000) revert Errors.InvalidAmount(_initialProtocolFee);
-        
+
         // Ensure reward percentage is <= 1e6 (100%)
-        if (_initialRewardDistributorPercentage > 1_000_000) revert Errors.InvalidAmount(_initialRewardDistributorPercentage);
+        if (_initialRewardDistributorPercentage > 1_000_000) {
+            revert Errors.InvalidAmount(_initialRewardDistributorPercentage);
+        }
 
         carbonCreditToken = ICarbonCreditToken(_carbonCreditToken);
         rewardDistributor = IRewardDistributor(_rewardDistributor);
@@ -98,16 +94,16 @@ contract CarbonCreditExchange is
         exchangeRate = _initialExchangeRate;
         protocolFeePercentage = _initialProtocolFee;
         rewardDistributorPercentage = _initialRewardDistributorPercentage;
-        
+
         // Default to enabled
         exchangeEnabled = true;
-        
+
         _grantRole(DEFAULT_ADMIN_ROLE, _initialAdmin);
         _grantRole(PAUSER_ROLE, _initialAdmin);
         _grantRole(UPGRADER_ROLE, _initialAdmin);
         _grantRole(RATE_SETTER_ROLE, _initialAdmin);
         _grantRole(EXCHANGE_MANAGER_ROLE, _initialAdmin);
-        
+
         emit ExchangeRateSet(0, _initialExchangeRate);
         emit ProtocolFeeSet(0, _initialProtocolFee);
         emit RewardDistributorPercentageSet(0, _initialRewardDistributorPercentage);
@@ -121,10 +117,10 @@ contract CarbonCreditExchange is
      */
     function setExchangeRate(uint256 _newRate) external onlyRole(RATE_SETTER_ROLE) {
         if (_newRate == 0) revert Errors.InvalidExchangeRate();
-        
+
         uint256 oldRate = exchangeRate;
         exchangeRate = _newRate;
-        
+
         emit ExchangeRateSet(oldRate, _newRate);
     }
 
@@ -135,10 +131,10 @@ contract CarbonCreditExchange is
     function setProtocolFee(uint256 _newFeePercentage) external onlyRole(EXCHANGE_MANAGER_ROLE) {
         // 1e6 = 100%, so ensure the fee is < 1e6 (100%)
         if (_newFeePercentage >= 1_000_000) revert Errors.InvalidAmount(_newFeePercentage);
-        
+
         uint256 oldFee = protocolFeePercentage;
         protocolFeePercentage = _newFeePercentage;
-        
+
         emit ProtocolFeeSet(oldFee, _newFeePercentage);
     }
 
@@ -149,10 +145,10 @@ contract CarbonCreditExchange is
     function setRewardDistributorPercentage(uint256 _newPercentage) external onlyRole(EXCHANGE_MANAGER_ROLE) {
         // Ensure percentage is <= 1e6 (100%)
         if (_newPercentage > 1_000_000) revert Errors.InvalidAmount(_newPercentage);
-        
+
         uint256 oldPercentage = rewardDistributorPercentage;
         rewardDistributorPercentage = _newPercentage;
-        
+
         emit RewardDistributorPercentageSet(oldPercentage, _newPercentage);
     }
 
@@ -164,9 +160,9 @@ contract CarbonCreditExchange is
     function setUSDCToken(address _newUsdcToken) external onlyRole(EXCHANGE_MANAGER_ROLE) {
         if (_newUsdcToken == address(0)) revert Errors.ZeroAddress();
         if (_newUsdcToken == address(usdcToken)) revert Errors.InvalidTokenAddress();
-        
+
         usdcToken = IERC20(_newUsdcToken);
-        
+
         emit USDCTokenSet(_newUsdcToken);
     }
 
@@ -183,32 +179,28 @@ contract CarbonCreditExchange is
      * @dev Allows users to sell carbon credits for USDC.
      * @param creditAmount The amount of carbon credits to sell.
      */
-    function exchangeCreditsForUSDC(uint256 creditAmount) 
-        external 
-        nonReentrant 
-        whenNotPaused 
-    {
+    function exchangeCreditsForUSDC(uint256 creditAmount) external nonReentrant whenNotPaused {
         if (!exchangeEnabled) revert Errors.ExchangeDisabled();
         if (creditAmount == 0) revert Errors.InvalidAmount(creditAmount);
-        
+
         // Calculate USDC amount (with 6 decimals) based on exchange rate
         // Carbon credits have 3 decimals, USDC has 6 decimals
         // exchangeRate is USDC (smallest units) per carbon credit (smallest units)
         // 1 carbon credit = exchangeRate * 1e-6 USDC
         uint256 usdcAmount = (creditAmount * exchangeRate) / 1e3;
-        
+
         // Calculate protocol fee
         uint256 feeAmount = (usdcAmount * protocolFeePercentage) / 1_000_000;
-        
+
         // Calculate net USDC to send to user
         uint256 netUsdcAmount = usdcAmount - feeAmount;
-        
+
         // Calculate amount for reward distributor
         uint256 rewardAmount = (feeAmount * rewardDistributorPercentage) / 1_000_000;
-        
+
         // Transfer carbon credits from user to protocol treasury
         carbonCreditToken.transferFromTreasury(msg.sender, creditAmount);
-        
+
         // Transfer USDC from protocol to user
         if (netUsdcAmount > 0) {
             if (usdcToken.balanceOf(address(this)) < netUsdcAmount) {
@@ -216,7 +208,7 @@ contract CarbonCreditExchange is
             }
             usdcToken.safeTransfer(msg.sender, netUsdcAmount);
         }
-        
+
         // Fund reward distributor if applicable
         if (rewardAmount > 0) {
             try rewardDistributor.depositRewards(rewardAmount) {
@@ -226,12 +218,12 @@ contract CarbonCreditExchange is
             }
             totalRewardsFunded += rewardAmount;
         }
-        
+
         // Update stats
         totalCreditsExchanged += creditAmount;
         totalUsdcCollected += usdcAmount;
         totalProtocolFees += feeAmount;
-        
+
         emit CreditsExchanged(msg.sender, creditAmount, netUsdcAmount, feeAmount);
     }
 
@@ -253,4 +245,4 @@ contract CarbonCreditExchange is
      * @dev Authorizes an upgrade for the UUPS pattern.
      */
     function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
-} 
+}
