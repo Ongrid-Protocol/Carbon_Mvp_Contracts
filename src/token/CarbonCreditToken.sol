@@ -27,6 +27,7 @@ contract CarbonCreditToken is
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
     bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
+    bytes32 public constant TREASURY_MANAGER_ROLE = keccak256("TREASURY_MANAGER_ROLE");
 
     address public protocolTreasury;
 
@@ -35,6 +36,14 @@ contract CarbonCreditToken is
      */
     modifier onlyMinter() {
         if (!hasRole(MINTER_ROLE, _msgSender())) revert Errors.CallerNotMinter();
+        _;
+    }
+
+    /**
+     * @dev Modifier to check if the caller has the TREASURY_MANAGER_ROLE.
+     */
+    modifier onlyTreasuryManager() {
+        if (!hasRole(TREASURY_MANAGER_ROLE, _msgSender())) revert Errors.CallerNotTreasuryManager();
         _;
     }
 
@@ -54,6 +63,7 @@ contract CarbonCreditToken is
         _grantRole(DEFAULT_ADMIN_ROLE, _initialAdmin);
         _grantRole(PAUSER_ROLE, _initialAdmin);
         _grantRole(UPGRADER_ROLE, _initialAdmin);
+        _grantRole(TREASURY_MANAGER_ROLE, _initialAdmin);
         // MINTER_ROLE is granted separately, typically to the EnergyDataBridge contract
 
         protocolTreasury = _protocolTreasury;
@@ -91,6 +101,47 @@ contract CarbonCreditToken is
     }
 
     /**
+     * @dev Transfers tokens from the treasury to a specified address.
+     * Can only be called by addresses with TREASURY_MANAGER_ROLE.
+     * @param to The recipient address.
+     * @param amount The amount to transfer.
+     */
+    function transferFromTreasury(address to, uint256 amount) 
+        external 
+        virtual 
+        whenNotPaused 
+        onlyTreasuryManager 
+    {
+        if (to == address(0)) revert Errors.ZeroAddress();
+        if (amount == 0) revert Errors.InvalidAmount(amount);
+        
+        _transfer(protocolTreasury, to, amount);
+        emit TreasuryTransfer(to, amount);
+    }
+
+    /**
+     * @dev Retires (burns) tokens from the treasury.
+     * Used to permanently remove carbon credits from circulation after use.
+     * Can only be called by addresses with TREASURY_MANAGER_ROLE.
+     * @param amount The amount to retire.
+     * @param reason A string describing the reason for retirement.
+     */
+    function retireFromTreasury(uint256 amount, string calldata reason) 
+        external 
+        virtual 
+        whenNotPaused 
+        onlyTreasuryManager 
+    {
+        if (amount == 0) revert Errors.InvalidAmount(amount);
+        
+        // First transfer to this contract, then burn
+        _transfer(protocolTreasury, address(this), amount);
+        _burn(address(this), amount);
+        
+        emit TreasuryRetirement(amount, reason);
+    }
+
+    /**
      * @dev Pauses all token transfers, minting, and burning.
      * Requires the caller to have the PAUSER_ROLE.
      */
@@ -119,24 +170,4 @@ contract CarbonCreditToken is
      * Requires the caller to have the UPGRADER_ROLE.
      */
     function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
-
-    // The following functions are overrides required by Solidity.
-
-    // Removed: _mint is not virtual in OZ ERC20 V5 and override is not needed here.
-    // The public mintToTreasury function correctly uses the inherited _mint.
-    // function _mint(address account, uint256 amount)
-    //     internal
-    //     override(ERC20, AccessControl) // Adjust if AccessControl requires _mint override in future OZ versions
-    // {
-    //     super._mint(account, amount);
-    // }
-
-    // Removed: _burn is not virtual in OZ ERC20 V5 and override is not needed here.
-    // ERC20Burnable provides the public burn functions which use the inherited _burn.
-    // function _burn(address account, uint256 amount)
-    //     internal
-    //     override(ERC20, ERC20Burnable)
-    // {
-    //     super._burn(account, amount);
-    // }
 }

@@ -44,4 +44,11 @@ interface IRewardDistributor {
      * @return The amount of reward tokens claimable.
      */
     function claimableRewards(address operator) external view returns (uint256);
+
+    /**
+     * @dev Deposits reward tokens into the contract to fund distribution.
+     * MUST only be callable by the REWARD_DEPOSITOR_ROLE.
+     * @param amount The amount of reward tokens to deposit.
+     */
+    function depositRewards(uint256 amount) external;
 }

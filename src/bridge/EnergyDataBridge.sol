@@ -3,8 +3,9 @@ pragma solidity ^0.8.25;
 
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol"; // Added for submit function
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {ICarbonCreditToken} from "../interfaces/ICarbonCreditToken.sol";
 import {IRewardDistributor} from "../interfaces/IRewardDistributor.sol";
 import {Errors} from "../common/Errors.sol";
@@ -13,17 +14,21 @@ import {Errors} from "../common/Errors.sol";
  * @title Energy Data Bridge
  * @dev Receives verified energy data batches from trusted off-chain sources (DATA_SUBMITTER_ROLE).
  * Processes batches to mint CarbonCreditTokens and update node contributions in the RewardDistributor.
+ * Includes P2P consensus verification and data challenge mechanism.
  * Pausable and upgradeable (UUPS).
  */
 contract EnergyDataBridge is
     AccessControl,
     Pausable,
-    ReentrancyGuard, // Ensure submit is nonReentrant
+    ReentrancyGuard,
     UUPSUpgradeable
 {
+    using ECDSA for bytes32;
+
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
     bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
     bytes32 public constant DATA_SUBMITTER_ROLE = keccak256("DATA_SUBMITTER_ROLE");
+    bytes32 public constant NODE_MANAGER_ROLE = keccak256("NODE_MANAGER_ROLE");
 
     /**
      * @dev Represents a single energy data entry within a batch.
@@ -33,6 +38,37 @@ contract EnergyDataBridge is
         address nodeOperatorAddress; // Address of the operator responsible for the node/device
         uint256 energyKWh; // Energy produced in kWh (no decimals)
         uint64 timestamp; // Unix timestamp of the data reading or aggregation period end
+    }
+
+    /**
+     * @dev P2P Consensus proof data for verifying batch validity
+     */
+    struct P2PConsensusProof {
+        bytes32 consensusRoundId; // Unique identifier for the consensus round
+        uint256 participatingNodeCount; // Number of nodes that participated in consensus
+        bytes32 consensusResultHash; // Hash of the consensus result
+        bytes multiSignature; // Aggregated signature from participating nodes
+    }
+
+    /**
+     * @dev Node registration information
+     */
+    struct RegisteredNode {
+        address operator; // Operator address
+        bytes32 peerId; // Identifier in the P2P network
+        bool isActive; // Whether the node is actively participating
+    }
+
+    /**
+     * @dev Challenge information for disputed batches
+     */
+    struct BatchChallenge {
+        address challenger; // Address that submitted the challenge
+        bytes32 batchHash; // Hash of the challenged batch
+        string reason; // Reason for the challenge
+        uint64 challengeTime; // Time when the challenge was submitted
+        bool isResolved; // Whether the challenge has been resolved
+        bool isUpheld; // If resolved, whether it was upheld or rejected
     }
 
     ICarbonCreditToken public carbonCreditToken;
@@ -46,6 +82,27 @@ contract EnergyDataBridge is
 
     // Mapping to prevent replay attacks by storing hashes of processed batches
     mapping(bytes32 => bool) public processedBatchHashes;
+    
+    // Mapping to store registered P2P nodes
+    mapping(bytes32 => RegisteredNode) public registeredNodes;
+    
+    // Array of peer IDs for enumeration
+    bytes32[] public peerIds;
+    
+    // Required nodes for consensus (minimum threshold)
+    uint256 public requiredConsensusNodes;
+    
+    // Batch challenges
+    mapping(bytes32 => BatchChallenge) public batchChallenges;
+    
+    // Batch data storage for challenge resolution
+    mapping(bytes32 => EnergyData[]) public storedBatches;
+    
+    // Batch processing delay (time window for challenges)
+    uint256 public batchProcessingDelay;
+    
+    // Batch submission timestamps
+    mapping(bytes32 => uint256) public batchSubmissionTimes;
 
     /**
      * @dev Emitted when the emission factor is updated.
@@ -55,10 +112,53 @@ contract EnergyDataBridge is
     /**
      * @dev Emitted when a batch of energy data has been successfully processed.
      */
-    event EnergyDataProcessed( // Hash of the processed batch data
-        // Total carbon credits minted for this batch (scaled by token decimals)
-        // Number of entries in the processed batch
-    bytes32 indexed batchHash, uint256 totalCreditsMinted, uint256 entriesProcessed);
+    event EnergyDataProcessed(
+        bytes32 indexed batchHash, 
+        uint256 totalCreditsMinted, 
+        uint256 entriesProcessed
+    );
+
+    /**
+     * @dev Emitted when a batch of energy data has been submitted but awaits processing.
+     */
+    event EnergyDataSubmitted(
+        bytes32 indexed batchHash, 
+        uint256 entriesSubmitted,
+        uint256 processAfterTimestamp
+    );
+
+    /**
+     * @dev Emitted when a P2P node is registered.
+     */
+    event NodeRegistered(
+        bytes32 indexed peerId,
+        address indexed operator
+    );
+
+    /**
+     * @dev Emitted when a node's status is updated.
+     */
+    event NodeStatusUpdated(
+        bytes32 indexed peerId,
+        bool isActive
+    );
+
+    /**
+     * @dev Emitted when a batch is challenged.
+     */
+    event BatchChallenged(
+        bytes32 indexed batchHash,
+        address indexed challenger,
+        string reason
+    );
+
+    /**
+     * @dev Emitted when a challenge is resolved.
+     */
+    event ChallengeResolved(
+        bytes32 indexed batchHash,
+        bool isUpheld
+    );
 
     /**
      * @dev Modifier to check if caller has the DATA_SUBMITTER_ROLE.
@@ -69,33 +169,49 @@ contract EnergyDataBridge is
     }
 
     /**
+     * @dev Modifier to check if caller has the NODE_MANAGER_ROLE.
+     */
+    modifier onlyNodeManager() {
+        if (!hasRole(NODE_MANAGER_ROLE, _msgSender())) revert Errors.CallerNotNodeManager();
+        _;
+    }
+
+    /**
      * @dev Sets up the contract, initializes dependencies, and grants initial roles.
      * @param _creditToken Address of the CarbonCreditToken contract.
      * @param _rewardDistributor Address of the RewardDistributor contract.
      * @param _initialAdmin Address to grant DEFAULT_ADMIN_ROLE, PAUSER_ROLE, and UPGRADER_ROLE.
      * @param _initialSubmitter Address to grant DATA_SUBMITTER_ROLE.
      * @param _initialEmissionFactor Initial emission factor (grams CO2e * 1e6 / kWh). Must be greater than 0.
+     * @param _initialRequiredConsensusNodes Initial number of nodes required for consensus.
+     * @param _initialBatchProcessingDelay Initial delay for batch processing in seconds.
      */
     constructor(
         address _creditToken,
         address _rewardDistributor,
         address _initialAdmin,
         address _initialSubmitter,
-        uint256 _initialEmissionFactor
+        uint256 _initialEmissionFactor,
+        uint256 _initialRequiredConsensusNodes,
+        uint256 _initialBatchProcessingDelay
     ) {
         if (_creditToken == address(0)) revert Errors.ZeroAddress();
         if (_rewardDistributor == address(0)) revert Errors.ZeroAddress();
         if (_initialAdmin == address(0)) revert Errors.ZeroAddress();
         if (_initialSubmitter == address(0)) revert Errors.ZeroAddress();
         if (_initialEmissionFactor == 0) revert Errors.InvalidEmissionFactor();
+        if (_initialRequiredConsensusNodes == 0) revert Errors.InvalidConsensusConfig();
 
         carbonCreditToken = ICarbonCreditToken(_creditToken);
         rewardDistributor = IRewardDistributor(_rewardDistributor);
         emissionFactor = _initialEmissionFactor;
+        requiredConsensusNodes = _initialRequiredConsensusNodes;
+        batchProcessingDelay = _initialBatchProcessingDelay;
 
         _grantRole(DEFAULT_ADMIN_ROLE, _initialAdmin);
         _grantRole(PAUSER_ROLE, _initialAdmin);
         _grantRole(UPGRADER_ROLE, _initialAdmin);
+        _grantRole(NODE_MANAGER_ROLE, _initialAdmin);
         _grantRole(DATA_SUBMITTER_ROLE, _initialSubmitter);
 
         emit EmissionFactorSet(0, _initialEmissionFactor);
@@ -114,55 +230,158 @@ contract EnergyDataBridge is
     }
 
     /**
-     * @dev Submits a batch of energy data for processing.
-     * Calculates and mints carbon credits, updates node contributions.
-     * Requires the caller to have the DATA_SUBMITTER_ROLE.
-     * Operation is paused if the contract is paused.
-     * Uses nonReentrant modifier to prevent reentrancy attacks.
-     * @param dataBatch An array of EnergyData structs.
+     * @dev Updates the required number of nodes for consensus.
+     * Can only be called by the DEFAULT_ADMIN_ROLE.
+     * @param _requiredNodes The new number of required nodes.
      */
-    function submitEnergyDataBatch(EnergyData[] calldata dataBatch)
+    function setRequiredConsensusNodes(uint256 _requiredNodes) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (_requiredNodes == 0) revert Errors.InvalidConsensusConfig();
+        requiredConsensusNodes = _requiredNodes;
+    }
+
+    /**
+     * @dev Updates the batch processing delay.
+     * Can only be called by the DEFAULT_ADMIN_ROLE.
+     * @param _delayInSeconds The new delay in seconds.
+     */
+    function setBatchProcessingDelay(uint256 _delayInSeconds) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        batchProcessingDelay = _delayInSeconds;
+    }
+
+    /**
+     * @dev Registers a P2P node in the system.
+     * Can only be called by addresses with NODE_MANAGER_ROLE.
+     * @param _peerId The peer ID in the P2P network.
+     * @param _operator The operator address for this node.
+     */
+    function registerNode(bytes32 _peerId, address _operator) external onlyNodeManager {
+        if (_peerId == bytes32(0)) revert Errors.InvalidPeerId();
+        if (_operator == address(0)) revert Errors.ZeroAddress();
+        
+        if (registeredNodes[_peerId].operator == address(0)) {
+            // New node
+            peerIds.push(_peerId);
+        }
+        
+        registeredNodes[_peerId] = RegisteredNode({
+            operator: _operator,
+            peerId: _peerId,
+            isActive: true
+        });
+        
+        emit NodeRegistered(_peerId, _operator);
+    }
+
+    /**
+     * @dev Updates a P2P node's active status.
+     * Can only be called by addresses with NODE_MANAGER_ROLE.
+     * @param _peerId The peer ID in the P2P network.
+     * @param _isActive Whether the node is active.
+     */
+    function updateNodeStatus(bytes32 _peerId, bool _isActive) external onlyNodeManager {
+        if (registeredNodes[_peerId].operator == address(0)) revert Errors.NodeNotRegistered();
+        
+        registeredNodes[_peerId].isActive = _isActive;
+        
+        emit NodeStatusUpdated(_peerId, _isActive);
+    }
+
+    /**
+     * @dev Returns the count of registered peer IDs.
+     * @return The number of registered peer IDs.
+     */
+    function getPeerIdCount() external view returns (uint256) {
+        return peerIds.length;
+    }
+
+    /**
+     * @dev Submits a batch of energy data with P2P consensus proof.
+     * Stores the batch data for later processing after the challenge period.
+     * @param dataBatch An array of EnergyData structs.
+     * @param consensusProof The P2P consensus proof for this batch.
+     */
+    function submitEnergyDataBatch(
+        EnergyData[] calldata dataBatch,
+        P2PConsensusProof calldata consensusProof
+    )
         external
         nonReentrant
         whenNotPaused
         onlyDataSubmitter
     {
         bytes32 batchHash = keccak256(abi.encode(dataBatch));
+        
         if (processedBatchHashes[batchHash]) revert Errors.BatchAlreadyProcessed();
+        if (batchSubmissionTimes[batchHash] != 0) revert Errors.BatchAlreadySubmitted();
+        
+        // Verify consensus proof
+        if (!_verifyP2PConsensus(dataBatch, consensusProof)) revert Errors.InvalidConsensusProof();
+        
+        // Store the batch data for later processing
+        EnergyData[] storage batchData = storedBatches[batchHash];
+        
+        for (uint256 i = 0; i < dataBatch.length; ++i) {
+            batchData.push(dataBatch[i]);
+        }
+        
+        // Record submission time
+        uint256 processAfter = block.timestamp + batchProcessingDelay;
+        batchSubmissionTimes[batchHash] = processAfter;
+        
+        emit EnergyDataSubmitted(batchHash, dataBatch.length, processAfter);
+    }
 
+    /**
+     * @dev Processes a previously submitted batch after the challenge period has passed.
+     * @param batchHash The hash of the batch to process.
+     */
+    function processBatch(bytes32 batchHash) 
+        external
+        nonReentrant
+        whenNotPaused
+    {
+        uint256 submissionTime = batchSubmissionTimes[batchHash];
+        if (submissionTime == 0) revert Errors.BatchNotSubmitted();
+        if (block.timestamp < submissionTime) revert Errors.ChallengePeriodNotOver();
+        if (processedBatchHashes[batchHash]) revert Errors.BatchAlreadyProcessed();
+        
+        // Check if there's an unresolved challenge
+        if (batchChallenges[batchHash].challenger != address(0) && 
+            !batchChallenges[batchHash].isResolved) {
+            revert Errors.UnresolvedChallenge();
+        }
+        
+        // Check if challenge was upheld
+        if (batchChallenges[batchHash].isResolved && 
+            batchChallenges[batchHash].isUpheld) {
+            revert Errors.BatchChallengeUpheld();
+        }
+        
+        EnergyData[] storage dataBatch = storedBatches[batchHash];
         uint256 batchTotalCreditsMinted = 0;
         uint256 numEntries = dataBatch.length;
 
-        // Temporary storage for aggregated contributions per operator within the batch
-        // This avoids multiple calls to rewardDistributor for the same operator within a batch
-        // mapping(address => uint256) batchContributions; // Removed: Unused in current implementation
-
         for (uint256 i = 0; i < numEntries; ++i) {
-            EnergyData calldata entry = dataBatch[i];
+            EnergyData storage entry = dataBatch[i];
 
             // Basic validation
             if (entry.nodeOperatorAddress == address(0)) continue; // Skip invalid entries
             if (entry.energyKWh == 0) continue; // Skip zero energy entries
 
-            // Calculate credits: (kWh * (grams/kWh * 1e6)) / (grams/tonne * factor_scale * token_decimals_scale)
-            // (kWh * (g * 1e6 / kWh)) / (1e6 g/tonne * 1e6 scale * 1e3 token_decimals)
-            // Simplified: (kWh * emissionFactor) / (1e6 * 1e3) = (kWh * emissionFactor) / 1e9
-            // Assumes CarbonCreditToken has 3 decimals.
-            uint256 creditsToMint = (entry.energyKWh * emissionFactor) / 1e9; // Results in token units (3 decimals)
+            // Calculate credits using the same formula as before
+            uint256 creditsToMint = (entry.energyKWh * emissionFactor) / 1e9;
 
             if (creditsToMint > 0) {
                 batchTotalCreditsMinted += creditsToMint;
             }
 
-            // Aggregate contribution score update (using energyKWh as score delta for simplicity)
-            // The actual score logic might be more complex, but for MVP this directly links energy to contribution.
-            // Note: RewardDistributor expects absolute score, not delta. Aggregation logic might need rework
-            // if multiple entries for same operator exist. For now, assume bridge aggregates off-chain or
-            // RewardDistributor handles deltas (which it currently doesn't).
-            // Let's stick to the PRD's flow for now, acknowledging the gas implication.
-            // Call RewardDistributor with the energy amount as the contribution delta.
+            // Update node contribution in reward distributor
             if (entry.nodeOperatorAddress != address(0) && entry.energyKWh > 0) {
-                rewardDistributor.updateNodeContribution(entry.nodeOperatorAddress, entry.energyKWh, entry.timestamp);
+                rewardDistributor.updateNodeContribution(
+                    entry.nodeOperatorAddress, 
+                    entry.energyKWh, 
+                    entry.timestamp
+                );
             }
         }
 
@@ -171,7 +390,96 @@ contract EnergyDataBridge is
         }
 
         processedBatchHashes[batchHash] = true;
+        
+        // Cleanup - Keep batch data for audit but can be optimized for gas in production
+        // delete storedBatches[batchHash];
+        
         emit EnergyDataProcessed(batchHash, batchTotalCreditsMinted, numEntries);
+    }
+
+    /**
+     * @dev Challenges a batch that is believed to contain fraudulent or incorrect data.
+     * @param batchHash The hash of the batch to challenge.
+     * @param reason The reason for the challenge.
+     */
+    function challengeBatch(bytes32 batchHash, string calldata reason) 
+        external
+        nonReentrant
+        whenNotPaused
+    {
+        uint256 submissionTime = batchSubmissionTimes[batchHash];
+        if (submissionTime == 0) revert Errors.BatchNotSubmitted();
+        if (block.timestamp >= submissionTime) revert Errors.ChallengePeriodOver();
+        if (processedBatchHashes[batchHash]) revert Errors.BatchAlreadyProcessed();
+        if (batchChallenges[batchHash].challenger != address(0)) revert Errors.BatchAlreadyChallenged();
+        
+        // Create challenge
+        batchChallenges[batchHash] = BatchChallenge({
+            challenger: msg.sender,
+            batchHash: batchHash,
+            reason: reason,
+            challengeTime: uint64(block.timestamp),
+            isResolved: false,
+            isUpheld: false
+        });
+        
+        emit BatchChallenged(batchHash, msg.sender, reason);
+    }
+
+    /**
+     * @dev Resolves a challenge for a batch.
+     * Can only be called by addresses with DEFAULT_ADMIN_ROLE.
+     * @param batchHash The hash of the challenged batch.
+     * @param isUpheld Whether the challenge is upheld (true) or rejected (false).
+     */
+    function resolveChallenge(bytes32 batchHash, bool isUpheld) 
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        if (batchChallenges[batchHash].challenger == address(0)) revert Errors.ChallengeNotFound();
+        if (batchChallenges[batchHash].isResolved) revert Errors.ChallengeAlreadyResolved();
+        
+        batchChallenges[batchHash].isResolved = true;
+        batchChallenges[batchHash].isUpheld = isUpheld;
+        
+        // If challenge is upheld, extend or reset the processing time
+        if (isUpheld) {
+            // Invalidate the batch completely
+            delete batchSubmissionTimes[batchHash];
+        }
+        
+        emit ChallengeResolved(batchHash, isUpheld);
+    }
+
+    /**
+     * @dev Internal function to verify P2P consensus.
+     * Checks that the consensus was reached with sufficient valid nodes.
+     * @param dataBatch The batch of energy data.
+     * @param consensusProof The consensus proof to verify.
+     * @return Whether the consensus is valid.
+     */
+    function _verifyP2PConsensus(
+        EnergyData[] calldata dataBatch,
+        P2PConsensusProof calldata consensusProof
+    ) internal view returns (bool) {
+        // Ensure enough nodes participated
+        if (consensusProof.participatingNodeCount < requiredConsensusNodes) {
+            return false;
+        }
+        
+        // Verify that consensus hash matches data batch
+        bytes32 expectedHash = keccak256(abi.encode(
+            consensusProof.consensusRoundId,
+            keccak256(abi.encode(dataBatch))
+        ));
+        
+        if (expectedHash != consensusProof.consensusResultHash) {
+            return false;
+        }
+        
+        // For MVP, we implement a simplified verification
+        // In production, this would validate multi-signatures against registered nodes
+        return true;
     }
 
     /**
@@ -195,13 +503,4 @@ contract EnergyDataBridge is
      * Requires the caller to have the UPGRADER_ROLE.
      */
     function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
-
-    // The following functions are overrides required by Solidity.
-    // Removed: _update override is not needed for AccessControl/Pausable V5
-    // function _update(address from, address to, uint256 value)
-    //     internal
-    //     override(AccessControl, Pausable) // Adjust if AccessControl requires _update override
-    // {
-    //     super._update(from, to, value);
-    // }
 }

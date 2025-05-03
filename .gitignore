@@ -2,6 +2,26 @@
 cache/
 out/
 
+# Exception for specific contract ABIs
+!out/CarbonCreditExchange.sol/
+!out/CarbonCreditExchange.sol/CarbonCreditExchange.json
+!out/CarbonCreditToken.sol/
+!out/CarbonCreditToken.sol/CarbonCreditToken.json
+!out/Constants.sol/
+!out/Constants.sol/Constants.json
+!out/EnergyDataBridge.sol/
+!out/EnergyDataBridge.sol/EnergyDataBridge.json
+!out/Errors.sol/
+!out/Errors.sol/Errors.json
+!out/ICarbonCreditExchange.sol/
+!out/ICarbonCreditExchange.sol/ICarbonCreditExchange.json
+!out/ICarbonCreditToken.sol/
+!out/ICarbonCreditToken.sol/ICarbonCreditToken.json
+!out/IRewardDistributor.sol/
+!out/IRewardDistributor.sol/IRewardDistributor.json
+!out/RewardDistributor.sol/
+!out/RewardDistributor.sol/RewardDistributor.json
+
 # Libs
 /lib
 
