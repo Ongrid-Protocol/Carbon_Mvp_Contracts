@@ -1,739 +1,432 @@
-# OnGrid Protocol Carbon Credit System Integration Guide
+# OnGrid Protocol Node Integration Guide (Updated)
 
 ## Overview
 
-This guide provides detailed instructions for integrating the OnGrid Protocol Carbon Credit System into a Rust-based networking stack. The system consists of several smart contracts that work together to track energy generation, mint carbon credits, and distribute rewards.
+This guide provides step-by-step instructions for backend/node developers (specifically using Rust) to integrate the OnGrid Protocol smart contracts. It covers functionalities relevant to the node architecture, including data submission, reward distribution, administrative operations, and a comprehensive testing plan.
 
-## System Components
+**Assumptions:**
+*   You have access to the contract ABIs (JSON files) and deployed contract addresses.
+*   You are using a Rust environment with a library like `ethers-rs` or `web3-rs` for blockchain interaction.
+*   Numbers representing `uint256` or other large integer types from contracts should be handled as strings or appropriate big number types in Rust (e.g., `U256` from `ethers-rs`) to avoid precision issues. `uint64` or smaller can often be Rust's native integer types if they fit, but string representations are safer for consistency when interacting with ABI examples.
+*   `bytes32` and `bytes` are represented as hex strings (e.g., `"0xabcd..."`) in examples. Your Rust library will handle the conversion to actual byte arrays.
+*   OGCC (`CarbonCreditToken`) has 3 decimals (1 OGCC token = 1000 smallest units).
+*   USDC (Reward Token / Exchange Token) is assumed to have 6 decimals (1 USDC = 1,000,000 smallest units).
 
-1. **EnergyDataBridge**: Processes verified energy data to mint carbon credits and update node contributions
-2. **CarbonCreditToken**: ERC20 token representing carbon credits (tonnes of CO2e avoided)
-3. **RewardDistributor**: Distributes rewards to node operators based on their contributions
-4. **CarbonCreditExchange**: Enables exchange of carbon credits for USDC with a protocol fee
+## General Node/Backend Setup
 
-## Contract Interaction Flow
+1.  **Blockchain Connection:** Establish a connection to the Ethereum node (e.g., via HTTP or WebSocket).
+2.  **Wallet/Signer (for transactions):** For operations that modify state (e.g., submitting data, admin functions), the backend service will need access to a wallet/signer with sufficient gas and appropriate roles/permissions on the contracts. This will typically be:
+    *   A **Data Submitter Wallet**: Holding the `DATA_SUBMITTER_ROLE` on the `EnergyDataBridge` for submitting energy data.
+    *   An **Admin Wallet/Service Wallet**: Holding necessary admin roles if the backend automates administrative tasks or provides an API for them (e.g., `NODE_MANAGER_ROLE`, `PAUSER_ROLE`, or even `DEFAULT_ADMIN_ROLE` on relevant contracts).
+    *   Consider security best practices for managing these private keys (e.g., HSM, secrets manager).
+3.  **Contract Instances:** For each contract, create an instance in your Rust code using its ABI and address.
+    ```rust
+    // Conceptual example with ethers-rs
+    // use ethers::prelude::*;
+    // use ethers::providers::{Provider, Http};
+    // use ethers::contract::Contract;
+    // use std::sync::Arc;
+    // use std::str::FromStr; // For Address::from_str
 
-```
-                      ┌───────────────────┐
-                      │                   │
-                      │  Energy Data P2P  │
-                      │     Network       │
-                      │                   │
-                      └─────────┬─────────┘
-                                │
-                                ▼
-                      ┌───────────────────┐
-                      │                   │
-                      │  EnergyDataBridge │
-                      │                   │
-                      └─────────┬─────────┘
-                                │
-                                ▼
-           ┌───────────────────┴───────────────────┐
-           │                                       │
-           ▼                                       ▼
-┌───────────────────┐                  ┌───────────────────┐
-│                   │                  │                   │
-│ CarbonCreditToken │                  │ RewardDistributor │
-│                   │                  │                   │
-└─────────┬─────────┘                  └───────────────────┘
-          │
-          ▼
-┌───────────────────┐
-│                   │
-│CarbonCreditExchange│
-│                   │
-└───────────────────┘
-```
+    // async fn setup_contracts(rpc_url: &str, contract_address_str: &str, contract_abi_json: &str) -> Result<Contract<Provider<Http>>, Box<dyn std::error::Error>> {
+    //     let provider = Provider::<Http>::try_from(rpc_url)?;
+    //     let client = Arc::new(provider);
+    //
+    //     let contract_address: Address = Address::from_str(contract_address_str)?;
+    //     let contract_abi: Abi = serde_json::from_str(contract_abi_json)?;
+    //     let contract_instance = Contract::new(contract_address, contract_abi, Arc::clone(&client));
+    //     Ok(contract_instance)
+    // }
+    //
+    // // To send transactions, you'll need a SignerMiddleware
+    // // let wallet: LocalWallet = "YOUR_PRIVATE_KEY".parse()?;
+    // // let chain_id = provider.get_chainid().await?.as_u64(); // Or set directly
+    // // let signer_client = SignerMiddleware::new(client, wallet.with_chain_id(chain_id));
+    // // let contract_with_signer = Contract::new(contract_address, contract_abi, Arc::new(signer_client));
+    ```
+4.  **BigNumber/String Handling:** Ensure all `uint` and `int` values from contracts are handled appropriately (e.g., `U256` in `ethers-rs`, or strings if passing through APIs) to prevent precision loss. When sending these values to contracts, they should also be formatted correctly.
+5.  **Event Listening:** Implement logic to listen for relevant smart contract events. This is crucial for tracking state changes, data submissions, reward distributions, etc.
 
-## Integration Steps
+## Contract Integration Order & Node Architecture Focus
 
-### 1. Setting Up Rust Dependencies
+The following order is recommended for integrating the contracts into your node architecture. The primary focus for the node system will be the `EnergyDataBridge`, data processing, and interactions with the `RewardDistributor`.
 
-Add these to your Cargo.toml:
+1.  **`CarbonCreditToken` (OGCC):** Foundational token contract.
+2.  **`RewardDistributor`:** Manages USDC rewards for node operators. The `EnergyDataBridge` will update contributions here.
+3.  **`EnergyDataBridge`:** Central to the node architecture. Nodes are expected to submit verified energy data batches and monitor their processing.
+4.  **`CarbonCreditExchange`:** Facilitates OGCC for USDC swaps.
 
-```toml
-[dependencies]
-ethers = { version = "2.0", features = ["abigen", "ws"] }
-tokio = { version = "1.32", features = ["full"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-dotenv = "0.15"
-```
+---
 
-### 2. Environment Setup
+## Step 1: `CarbonCreditToken` (OGCC) Integration
 
-Create a `.env` file to store contract addresses and private keys:
+This contract manages the OnGrid Carbon Credit (OGCC) ERC20 token. OGCC has **3 decimals**.
 
-```
-RPC_URL=https://rpc-endpoint.example.com
-PRIVATE_KEY=your_private_key_here
-BRIDGE_ADDRESS=0x...
-CARBON_TOKEN_ADDRESS=0x...
-REWARD_DISTRIBUTOR_ADDRESS=0x...
-EXCHANGE_ADDRESS=0x...
-```
+### Functions (Node-Relevant)
 
-### 3. Core Integration Code Structure
+#### `balanceOf(address account)`
+*   **Purpose:** Get the OGCC token balance of an account.
+*   **Inputs:** `account` (address)
+*   **Outputs:** `balance` (`uint256`, smallest units)
+*   **Node Interaction:** Useful for displaying balances (e.g., treasury, user wallets if the backend provides this info).
 
-```rust
-use ethers::{
-    contract::Abigen,
-    prelude::*,
-    providers::{Http, Provider},
-    signers::{LocalWallet, Signer},
-};
-use std::sync::Arc;
-use std::env;
-use dotenv::dotenv;
+#### `allowance(address owner, address spender)`
+*   **Purpose:** Check the amount of tokens an `owner` allowed a `spender`. Critical for `CarbonCreditExchange`.
+*   **Inputs:** `owner` (address), `spender` (address, e.g., `CarbonCreditExchange` address)
+*   **Outputs:** `remaining` (`uint256`, smallest units)
+*   **Node Interaction:** The backend might check allowances if it facilitates transactions or provides information to users about the `CarbonCreditExchange`.
 
-// Load ABIs and generate Rust contract bindings
-abigen!(
-    EnergyDataBridge,
-    "./abis/EnergyDataBridge.json",
-    event_derives(serde::Deserialize, serde::Serialize)
-);
+#### `approve(address spender, uint256 value)`
+*   **Purpose:** Allow a `spender` (e.g., `CarbonCreditExchange` contract) to withdraw tokens from the caller.
+*   **Inputs:** `spender` (address), `value` (`uint256`, smallest units)
+*   **Outputs:** (Transaction receipt) Returns `true`.
+*   **Events Emitted:** `Approval`
+*   **Node Interaction:** Typically user-initiated. If the backend manages a treasury wallet that will sell credits on the `CarbonCreditExchange`, the backend would need to call `approve` on behalf of that treasury wallet, targeting the `CarbonCreditExchange` address.
 
-abigen!(
-    CarbonCreditToken,
-    "./abis/CarbonCreditToken.json",
-    event_derives(serde::Deserialize, serde::Serialize)
-);
+#### `protocolTreasury()`
+*   **Purpose:** Get the address of the protocol treasury.
+*   **Outputs:** `address`
+*   **Node Interaction:** Useful if the backend needs to know where OGCC tokens are directed (e.g., upon exchange via `CarbonCreditExchange`).
 
-abigen!(
-    RewardDistributor,
-    "./abis/RewardDistributor.json",
-    event_derives(serde::Deserialize, serde::Serialize)
-);
+### Events (Node-Relevant)
 
-abigen!(
-    CarbonCreditExchange,
-    "./abis/CarbonCreditExchange.json",
-    event_derives(serde::Deserialize, serde::Serialize)
-);
+#### `Transfer(address indexed from, address indexed to, uint256 value)`
+*   **Purpose:** Emitted when tokens are transferred, including mints (from zero address to treasury), burns (from an account to zero address), and regular transfers.
+*   **Payload:** `from` (address), `to` (address), `value` (`uint256`, smallest units)
+*   **Node Action:** Monitor for analytics, tracking treasury movements, or user balances.
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    dotenv().ok();
-    
-    // Connect to the blockchain
-    let rpc_url = env::var("RPC_URL")?;
-    let provider = Provider::<Http>::try_from(rpc_url)?;
-    
-    // Set up wallet
-    let private_key = env::var("PRIVATE_KEY")?;
-    let wallet = private_key.parse::<LocalWallet>()?;
-    let client = SignerMiddleware::new(provider, wallet);
-    let client = Arc::new(client);
-    
-    // Initialize contract instances
-    let bridge_address = env::var("BRIDGE_ADDRESS")?.parse::<Address>()?;
-    let bridge = EnergyDataBridge::new(bridge_address, client.clone());
-    
-    let token_address = env::var("CARBON_TOKEN_ADDRESS")?.parse::<Address>()?;
-    let token = CarbonCreditToken::new(token_address, client.clone());
-    
-    let distributor_address = env::var("REWARD_DISTRIBUTOR_ADDRESS")?.parse::<Address>()?;
-    let distributor = RewardDistributor::new(distributor_address, client.clone());
-    
-    let exchange_address = env::var("EXCHANGE_ADDRESS")?.parse::<Address>()?;
-    let exchange = CarbonCreditExchange::new(exchange_address, client.clone());
-    
-    Ok(())
-}
-```
+#### `Approval(address indexed owner, address indexed spender, uint256 value)`
+*   **Purpose:** Emitted on a successful call to `approve`.
+*   **Payload:** `owner` (address), `spender` (address), `value` (`uint256`, smallest units)
+*   **Node Action:** Monitor if tracking allowances for specific contracts (like `CarbonCreditExchange`) is needed.
 
-### 4. Detailed EnergyDataBridge Integration
+#### `ProtocolTreasuryChanged(address indexed newTreasury)`
+*   **Purpose:** Emitted when the protocol treasury address is updated.
+*   **Payload:** `newTreasury` (address)
+*   **Node Action:** Update any internally cached treasury address.
 
-The EnergyDataBridge is the most critical component for integration, as it processes energy data from the P2P network.
+---
 
-#### 4.1 Define Energy Data Structures
+## Step 2: `RewardDistributor` Integration
 
-```rust
-// Energy data structure matching Solidity struct
-struct EnergyData {
-    device_id: [u8; 32],
-    node_operator_address: Address,
-    energy_kwh: U256,
-    timestamp: u64,
-}
+Manages USDC rewards for node operators. USDC has **6 decimals**. `REWARD_PRECISION` in the contract is `1e18`.
 
-// P2P Consensus proof structure
-struct P2PConsensusProof {
-    consensus_round_id: [u8; 32],
-    participating_node_count: U256,
-    consensus_result_hash: [u8; 32],
-    multi_signature: Vec<u8>,
-}
-```
+### Functions (Node Operator / System Relevant)
 
-#### 4.2 Submitting Energy Data Batches
+#### `claimableRewards(address operator)`
+*   **Purpose:** Calculates USDC rewards a node operator can claim.
+*   **Inputs:** `operator` (address)
+*   **Outputs:** `pendingRewards` (`uint256`, USDC smallest units)
+*   **Node Interaction:** Backend can call this to display claimable rewards for operators.
 
-```rust
-async fn submit_energy_data_batch(
-    bridge: &EnergyDataBridge<SignerMiddleware<Provider<Http>, LocalWallet>>,
-    data_batch: Vec<EnergyData>,
-    consensus_proof: P2PConsensusProof,
-) -> Result<TransactionReceipt, Box<dyn std::error::Error>> {
-    // Convert Rust structures to contract-compatible types
-    let contract_data_batch: Vec<(
-        [u8; 32],
-        Address,
-        U256,
-        u64,
-    )> = data_batch
-        .iter()
-        .map(|data| (
-            data.device_id,
-            data.node_operator_address,
-            data.energy_kwh,
-            data.timestamp,
-        ))
-        .collect();
+#### `claimRewards()`
+*   **Purpose:** Allows the calling node operator (`msg.sender`) to claim accrued USDC rewards.
+*   **Inputs:** None.
+*   **Events Emitted:** `RewardsClaimed`
+*   **Node Interaction:** If operators manage their own wallets, they initiate this. If the backend manages operator wallets for claims, it would call this.
 
-    let contract_consensus_proof = (
-        consensus_proof.consensus_round_id,
-        consensus_proof.participating_node_count,
-        consensus_proof.consensus_result_hash,
-        consensus_proof.multi_signature,
-    );
+#### `nodeInfo(address operator)`
+*   **Purpose:** Retrieves information about a node operator.
+*   **Inputs:** `operator` (address)
+*   **Outputs:** `contributionScore` (`uint256`), `rewardDebt` (`uint256`)
+*   **Node Interaction:** Useful for displaying operator statistics.
 
-    // Submit batch to the contract
-    let tx = bridge.submit_energy_data_batch(contract_data_batch, contract_consensus_proof);
-    let pending_tx = tx.send().await?;
-    let receipt = pending_tx.await?;
-    
-    Ok(receipt.unwrap())
-}
-```
+#### `updateNodeContribution(address operator, uint256 contributionDelta, uint64 timestamp)`
+*   **Purpose:** Updates the contribution score for a node operator. **This will be called by the `EnergyDataBridge` contract.**
+*   **Inputs:** `operator` (address), `contributionDelta` (`uint256`), `timestamp` (`uint64`)
+*   **Events Emitted:** `NodeContributionUpdated`
+*   **Node Interaction:** The backend (acting as `EnergyDataBridge` or through it) is responsible for ensuring this is called indirectly via `EnergyDataBridge.processBatch()`. The `EnergyDataBridge` needs `METRIC_UPDATER_ROLE` on this contract.
 
-#### 4.3 Processing Batches After Challenge Period
+### Events (Node Operator / System Relevant)
 
-```rust
-async fn process_batch(
-    bridge: &EnergyDataBridge<SignerMiddleware<Provider<Http>, LocalWallet>>,
-    batch_hash: [u8; 32],
-) -> Result<TransactionReceipt, Box<dyn std::error::Error>> {
-    let tx = bridge.process_batch(batch_hash);
-    let pending_tx = tx.send().await?;
-    let receipt = pending_tx.await?;
-    
-    Ok(receipt.unwrap())
-}
-```
+#### `RewardsClaimed(address indexed operator, uint256 amount)`
+*   **Purpose:** Emitted when an operator claims rewards.
+*   **Payload:** `operator` (address), `amount` (`uint256`, USDC smallest units)
+*   **Node Action:** Monitor to track claims, update operator dashboards.
 
-#### 4.4 Node Registration
+#### `NodeContributionUpdated(address indexed operator, uint256 newScore, uint64 timestamp)`
+*   **Purpose:** Emitted when an operator's contribution score is updated (called by `EnergyDataBridge`).
+*   **Payload:** `operator` (address), `newScore` (`uint256`), `timestamp` (`uint64`)
+*   **Node Action:** Crucial. Update displayed scores, verify contributions are reflected.
 
-```rust
-async fn register_node(
-    bridge: &EnergyDataBridge<SignerMiddleware<Provider<Http>, LocalWallet>>,
-    peer_id: [u8; 32],
-    operator: Address,
-) -> Result<TransactionReceipt, Box<dyn std::error::Error>> {
-    let tx = bridge.register_node(peer_id, operator);
-    let pending_tx = tx.send().await?;
-    let receipt = pending_tx.await?;
-    
-    Ok(receipt.unwrap())
-}
-```
+---
 
-### 5. P2P Network Integration with EnergyDataBridge
+## Step 3: `EnergyDataBridge` Integration
 
-#### 5.1 Consensus Management
+Central to the node architecture. Nodes submit energy data, monitor status, and potentially manage challenges.
 
-```rust
-// Collect signatures from participating nodes
-async fn collect_signatures(
-    data_hash: [u8; 32],
-    nodes: Vec<Address>,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    // Implementation depends on your P2P network
-    // This should collect and aggregate signatures from nodes
-    
-    Ok(Vec::new()) // Placeholder
-}
+**Data Structures (Essential for `submitEnergyDataBatch`):**
 
-// Generate consensus proof
-async fn generate_consensus_proof(
-    data_batch: &Vec<EnergyData>,
-    participating_nodes: Vec<Address>,
-) -> Result<P2PConsensusProof, Box<dyn std::error::Error>> {
-    // Create a unique ID for this consensus round
-    let consensus_round_id = [0u8; 32]; // Replace with proper ID generation
-    
-    // Hash the data batch
-    let data_hash = keccak256(&data_batch); // Implement proper serialization & hashing
-    
-    // Collect signatures from nodes
-    let multi_signature = collect_signatures(data_hash, participating_nodes).await?;
-    
-    Ok(P2PConsensusProof {
-        consensus_round_id,
-        participating_node_count: U256::from(participating_nodes.len()),
-        consensus_result_hash: data_hash,
-        multi_signature,
-    })
-}
-```
-
-#### 5.2 Complete Flow for Energy Data Submission
-
-```rust
-async fn handle_energy_data_from_p2p_network(
-    bridge: &EnergyDataBridge<SignerMiddleware<Provider<Http>, LocalWallet>>,
-    raw_data: Vec<RawEnergyData>, // Your P2P network data format
-    participating_nodes: Vec<Address>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Format data for blockchain submission
-    let data_batch: Vec<EnergyData> = raw_data
-        .into_iter()
-        .map(|raw| {
-            // Convert your raw data format to EnergyData structure
-            EnergyData {
-                device_id: raw.device_id,
-                node_operator_address: raw.operator_address,
-                energy_kwh: U256::from(raw.energy_kwh),
-                timestamp: raw.timestamp,
-            }
-        })
-        .collect();
-    
-    // 2. Generate consensus proof
-    let consensus_proof = generate_consensus_proof(&data_batch, participating_nodes).await?;
-    
-    // 3. Submit batch to the bridge contract
-    let receipt = submit_energy_data_batch(bridge, data_batch, consensus_proof).await?;
-    
-    // 4. Store batch hash for later processing
-    let events = receipt.logs
-        .iter()
-        .filter_map(|log| bridge.decode_event::<EnergyDataSubmittedFilter>("EnergyDataSubmitted", log))
-        .collect::<Vec<_>>();
-    
-    if let Some(Ok(event)) = events.first() {
-        let batch_hash = event.0.batch_hash;
-        let process_after = event.0.process_after_timestamp;
-        
-        // Store for processing after challenge period
-        store_batch_for_processing(batch_hash, process_after);
+*   **`EnergyData` struct (Solidity):**
+    ```solidity
+    struct EnergyData {
+        bytes32 deviceId;
+        address nodeOperatorAddress;
+        uint256 energyKWh; // e.g., 1500 for 1.5 kWh (no contract-side decimals)
+        uint64 timestamp;
     }
-    
-    Ok(())
-}
-
-// Example placeholder function to store batch info
-fn store_batch_for_processing(batch_hash: [u8; 32], process_after: U256) {
-    // Implement storage based on your system
-}
-```
-
-### 6. Batch Processing Job
-
-```rust
-async fn process_pending_batches(
-    bridge: &EnergyDataBridge<SignerMiddleware<Provider<Http>, LocalWallet>>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // Get pending batches that are ready for processing
-    let pending_batches = get_pending_batches_ready_for_processing();
-    
-    for batch_hash in pending_batches {
-        match process_batch(bridge, batch_hash).await {
-            Ok(receipt) => {
-                // Handle successful processing
-                let events = receipt.logs
-                    .iter()
-                    .filter_map(|log| bridge.decode_event::<EnergyDataProcessedFilter>("EnergyDataProcessed", log))
-                    .collect::<Vec<_>>();
-                
-                if let Some(Ok(event)) = events.first() {
-                    let total_credits_minted = event.0.total_credits_minted;
-                    let entries_processed = event.0.entries_processed;
-                    
-                    // Log or store information about processed batch
-                    log_processed_batch(batch_hash, total_credits_minted, entries_processed);
-                }
-                
-                // Mark batch as processed
-                mark_batch_processed(batch_hash);
-            },
-            Err(e) => {
-                // Handle errors (retry logic, logging, etc.)
-                log_error(batch_hash, e);
-            }
+    ```
+    *   **Example for one entry (JSON representation for Rust):**
+        ```json
+        {
+          "deviceId": "0xdevicehash...",
+          "nodeOperatorAddress": "0xNodeOpAddress...",
+          "energyKWh": "1500", // Represents 1.5 kWh.
+          "timestamp": "1678886000"
         }
+        ```
+
+*   **`P2PConsensusProof` struct (Solidity):**
+    ```solidity
+    struct P2PConsensusProof {
+        bytes32 consensusRoundId;
+        uint256 participatingNodeCount;
+        bytes32 consensusResultHash; // hash of (consensusRoundId, keccak256(abi.encode(dataBatch)))
+        bytes multiSignature; // Aggregated signatures
     }
-    
-    Ok(())
-}
-
-// Example placeholder functions
-fn get_pending_batches_ready_for_processing() -> Vec<[u8; 32]> {
-    // Implementation depends on your storage system
-    Vec::new()
-}
-
-fn mark_batch_processed(batch_hash: [u8; 32]) {
-    // Implementation depends on your storage system
-}
-
-fn log_processed_batch(batch_hash: [u8; 32], total_credits_minted: U256, entries_processed: U256) {
-    // Implementation depends on your logging system
-}
-
-fn log_error(batch_hash: [u8; 32], error: Box<dyn std::error::Error>) {
-    // Implementation depends on your logging system
-}
-```
-
-### 7. Integration with Other Contracts
-
-#### 7.1 Monitoring RewardDistributor
-
-```rust
-async fn monitor_reward_claims(
-    reward_distributor: &RewardDistributor<SignerMiddleware<Provider<Http>, LocalWallet>>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // Set up event listener for RewardsClaimed events
-    let events = reward_distributor.events().from_block(0u64);
-    let mut stream = events.stream().await?;
-    
-    while let Some(Ok(event)) = stream.next().await {
-        match event {
-            RewardDistributorEvents::RewardsClaimedFilter(claim) => {
-                // Process reward claim
-                let operator = claim.operator;
-                let amount = claim.amount;
-                
-                // Update your system
-                log_reward_claim(operator, amount);
-            },
-            _ => {}
+    ```
+    *   **Example (JSON representation for Rust):**
+        ```json
+        {
+          "consensusRoundId": "0xroundIdHash...",
+          "participatingNodeCount": "5",
+          "consensusResultHash": "0xbatchDataCombinedHash...",
+          "multiSignature": "0xaggregatedSigsHex..." // e.g., "0x1234abcd..."
         }
-    }
-    
-    Ok(())
-}
-```
+        ```
 
-#### 7.2 CarbonCreditExchange Monitoring
+### Functions (Node Core Functionality)
 
-```rust
-async fn monitor_credit_exchanges(
-    exchange: &CarbonCreditExchange<SignerMiddleware<Provider<Http>, LocalWallet>>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // Set up event listener for CreditsExchanged events
-    let events = exchange.events().from_block(0u64);
-    let mut stream = events.stream().await?;
-    
-    while let Some(Ok(event)) = stream.next().await {
-        match event {
-            CarbonCreditExchangeEvents::CreditsExchangedFilter(exchange_event) => {
-                // Process credit exchange
-                let user = exchange_event.user;
-                let credit_amount = exchange_event.credit_amount;
-                let usdc_amount = exchange_event.usdc_amount;
-                let fee_amount = exchange_event.fee_amount;
-                
-                // Update your system
-                log_credit_exchange(user, credit_amount, usdc_amount, fee_amount);
-            },
-            _ => {}
-        }
-    }
-    
-    Ok(())
-}
-```
+#### `submitEnergyDataBatch(EnergyData[] calldata dataBatch, P2PConsensusProof calldata consensusProof)`
+*   **Purpose:** Submits a batch of energy data with P2P consensus proof.
+*   **Inputs:** `dataBatch` (`EnergyData[]`), `consensusProof` (`P2PConsensusProof`)
+*   **Events Emitted:** `EnergyDataSubmitted`
+*   **Node Interaction (Backend Responsibility):**
+    1.  Aggregating `EnergyData` from devices/operators.
+    2.  Facilitating off-chain P2P consensus to generate the `P2PConsensusProof`, including `consensusResultHash` and `multiSignature`.
+        *   `batchDataHash = keccak256(abi.encode(dataBatch))`
+        *   `consensusResultHash = keccak256(abi.encode(consensusProof.consensusRoundId, batchDataHash))`
+    3.  The backend service/wallet calling this function MUST have the `DATA_SUBMITTER_ROLE`.
+    4.  **CRITICAL:** The `_verifyP2PConsensus` function in the smart contract is currently a **placeholder**. The security and validity of the system depend on the off-chain P2P consensus being robust and the `multiSignature` being correctly generated. A future contract upgrade will implement on-chain multi-signature verification against registered nodes using this `multiSignature` data.
 
-### 8. Error Handling
+#### `processBatch(bytes32 batchHash)`
+*   **Purpose:** Processes a submitted batch after the challenge period, mints credits, and updates node contributions.
+*   **Inputs:** `batchHash` (`bytes32` - keccak256 hash of the `EnergyData[]` array)
+*   **Events Emitted:** `EnergyDataProcessed` (on success)
+*   **Node Interaction:**
+    1.  Backend should monitor submitted batches (via `EnergyDataSubmitted` event and `batchSubmissionTimes(batchHash)` view function).
+    2.  Once `block.timestamp >= batchSubmissionTimes[batchHash]`, and if `batchChallenges[batchHash]` shows no active/upheld challenge, this function can be called.
+    3.  This might be triggered by a keeper bot managed by the backend, or an admin action via a backend API.
+    4.  This function internally calls `carbonCreditToken.mintToTreasury()` (requires `EnergyDataBridge` to have `MINTER_ROLE` on `CarbonCreditToken`) and `rewardDistributor.updateNodeContribution()` (requires `EnergyDataBridge` to have `METRIC_UPDATER_ROLE` on `RewardDistributor`).
 
-```rust
-// Define custom errors for your integration
-enum IntegrationError {
-    ContractError(String),
-    NetworkError(String),
-    ConsensusError(String),
-    DataFormatError(String),
-}
+### View Functions (Node Informational & Monitoring)
 
-impl From<ContractError<Provider<Http>>> for IntegrationError {
-    fn from(error: ContractError<Provider<Http>>) -> Self {
-        IntegrationError::ContractError(format!("{:?}", error))
-    }
-}
+*   `emissionFactor()`: Returns `uint256` (grams CO2e * 1e6 / kWh).
+*   `requiredConsensusNodes()`: Returns `uint256`.
+*   `batchProcessingDelay()`: Returns `uint256` (seconds).
+*   `batchSubmissionTimes(bytes32 batchHash)`: Returns `uint256` (Unix timestamp, 0 if not submitted).
+*   `processedBatchHashes(bytes32 batchHash)`: Returns `bool`.
+*   `batchChallenges(bytes32 batchHash)`: Returns `BatchChallenge` struct.
+*   `registeredNodes(bytes32 peerId)`: Returns `RegisteredNode` struct.
+*   `getPeerIdCount()`: Returns `uint256`.
+*   `peerIds(uint256 index)`: Returns `bytes32`.
 
-// Add error handling to your functions
-async fn safe_submit_batch(
-    bridge: &EnergyDataBridge<SignerMiddleware<Provider<Http>, LocalWallet>>,
-    data_batch: Vec<EnergyData>,
-    consensus_proof: P2PConsensusProof,
-    retry_count: u8,
-) -> Result<TransactionReceipt, IntegrationError> {
-    let mut attempts = 0;
-    
-    while attempts < retry_count {
-        match submit_energy_data_batch(bridge, data_batch.clone(), consensus_proof.clone()).await {
-            Ok(receipt) => return Ok(receipt),
-            Err(e) => {
-                // Check if error is temporary (gas price, nonce, etc.)
-                if is_temporary_error(&e) {
-                    attempts += 1;
-                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                    continue;
-                }
-                
-                // Permanent error
-                return Err(IntegrationError::ContractError(format!("{:?}", e)));
-            }
-        }
-    }
-    
-    Err(IntegrationError::NetworkError("Max retry count exceeded".to_string()))
-}
+### Functions (Challenge-Related - Backend may interact)
 
-fn is_temporary_error(error: &Box<dyn std::error::Error>) -> bool {
-    // Implement logic to identify temporary errors
-    error.to_string().contains("nonce") || error.to_string().contains("gas")
-}
-```
+#### `challengeBatch(bytes32 batchHash, string calldata reason)`
+*   **Purpose:** Allows anyone to challenge a submitted batch.
+*   **Inputs:** `batchHash` (`bytes32`), `reason` (string)
+*   **Events Emitted:** `BatchChallenged`
+*   **Node Interaction:** The backend might include logic to flag suspicious data or allow admins/operators (via a backend-controlled interface) to initiate challenges.
 
-### 9. Testing and Verification
+### Events (Node Core Monitoring)
 
-```rust
-async fn verify_bridge_configuration(
-    bridge: &EnergyDataBridge<SignerMiddleware<Provider<Http>, LocalWallet>>,
-) -> Result<bool, Box<dyn std::error::Error>> {
-    // Check key parameters
-    let token_address = bridge.carbon_credit_token().call().await?;
-    let distributor_address = bridge.reward_distributor().call().await?;
-    let emission_factor = bridge.emission_factor().call().await?;
-    let req_consensus_nodes = bridge.required_consensus_nodes().call().await?;
-    
-    println!("Bridge Configuration:");
-    println!("CarbonCreditToken: {:?}", token_address);
-    println!("RewardDistributor: {:?}", distributor_address);
-    println!("Emission Factor: {:?}", emission_factor);
-    println!("Required Consensus Nodes: {:?}", req_consensus_nodes);
-    
-    // Verify the values match expected configuration
-    let expected_token = env::var("CARBON_TOKEN_ADDRESS")?.parse::<Address>()?;
-    let expected_distributor = env::var("REWARD_DISTRIBUTOR_ADDRESS")?.parse::<Address>()?;
-    
-    Ok(token_address == expected_token && distributor_address == expected_distributor)
-}
-```
+*   `EnergyDataSubmitted(bytes32 indexed batchHash, uint256 entriesSubmitted, uint256 processAfterTimestamp)`: Track `batchHash` and `processAfterTimestamp`.
+*   `EnergyDataProcessed(bytes32 indexed batchHash, uint256 totalCreditsMinted, uint256 entriesProcessed)`: Update batch status, log mints.
+*   `BatchChallenged(bytes32 indexed batchHash, address indexed challenger, string reason)`: Update batch status to "Challenged", alert systems.
+*   `ChallengeResolved(bytes32 indexed batchHash, bool isUpheld)`: Update batch status based on resolution.
+*   `NodeRegistered(bytes32 indexed peerId, address indexed operator)`: Update internal list of P2P nodes.
+*   `NodeStatusUpdated(bytes32 indexed peerId, bool isActive)`: Update P2P node status.
 
-## Contract Function Inputs/Outputs and Events
+---
 
-### EnergyDataBridge
+## Step 4: `CarbonCreditExchange` Integration
 
-#### Key Functions
+Allows users to exchange OGCC for USDC. The backend might monitor this for analytics or manage treasury interactions.
 
-1. **submitEnergyDataBatch**
-   - **Inputs**: 
-     - `dataBatch`: Array of `EnergyData` structs (deviceId, nodeOperatorAddress, energyKWh, timestamp)
-     - `consensusProof`: P2P consensus proof (consensusRoundId, participatingNodeCount, consensusResultHash, multiSignature)
-   - **Events Emitted**: 
-     - `EnergyDataSubmitted(bytes32 batchHash, uint256 entriesSubmitted, uint256 processAfterTimestamp)`
-   - **Expected Behavior**: Stores batch data for later processing after the challenge period
+### Functions (User / Monitoring / Backend-Treasury Relevant)
 
-2. **processBatch**
-   - **Inputs**: 
-     - `batchHash`: bytes32 hash of the batch to process
-   - **Events Emitted**: 
-     - `EnergyDataProcessed(bytes32 batchHash, uint256 totalCreditsMinted, uint256 entriesProcessed)`
-   - **Expected Behavior**: Mints carbon credits to treasury and updates node contributions in RewardDistributor
+#### `exchangeCreditsForUSDC(uint256 creditAmount)`
+*   **Purpose:** Allows an account to sell their OGCC for USDC.
+*   **Inputs:** `creditAmount` (`uint256`, OGCC smallest units)
+*   **Events Emitted:** `CreditsExchanged`, `RewardsPoolFunded`
+*   **Node Interaction:**
+    1.  **User Action Required Pre-call:** The account selling OGCC (e.g., user, or a treasury wallet managed by the backend) must first call `CarbonCreditToken.approve(CarbonCreditExchangeAddress, creditAmount)` to allow the `CarbonCreditExchange` to spend their OGCC.
+    2.  The `CarbonCreditExchange` will then call `IERC20(carbonCreditTokenAddress).transferFrom(caller, cctProtocolTreasury, creditAmount)`.
+    3.  The backend may monitor this for system analytics. If the backend is managing a treasury wallet that sells OGCC, it would orchestrate the `approve` and then this `exchangeCreditsForUSDC` call.
+    4.  **USDC Liquidity:** The `CarbonCreditExchange` contract needs to be funded with USDC to pay sellers. This is an external operational concern. Reverts with `InsufficientUSDCLiquidity` if funds are low.
+    5.  **Reward Funding:** A portion of fees is sent to `RewardDistributor`. This requires:
+        *   `CarbonCreditExchange` to have `REWARD_DEPOSITOR_ROLE` on `RewardDistributor`.
+        *   `CarbonCreditExchange` (as `msg.sender` to `depositRewards`) must `approve` the `RewardDistributor` to spend its (the Exchange's) USDC. This is an operational step, likely managed by an admin or specialized service. The `try/catch` in the contract means the exchange might proceed even if reward deposit fails, but `RewardsPoolFunded` won't emit.
 
-3. **registerNode**
-   - **Inputs**: 
-     - `peerId`: bytes32 identifier in the P2P network
-     - `operator`: address of the node operator
-   - **Events Emitted**: 
-     - `NodeRegistered(bytes32 peerId, address operator)`
-   - **Expected Behavior**: Registers a node in the system for participation
+### View Functions (Monitoring Relevant)
 
-4. **challengeBatch**
-   - **Inputs**: 
-     - `batchHash`: bytes32 hash of the batch to challenge
-     - `reason`: string explaining the reason for challenge
-   - **Events Emitted**: 
-     - `BatchChallenged(bytes32 batchHash, address challenger, string reason)`
-   - **Expected Behavior**: Creates a challenge against a submitted batch
+*   `exchangeRate()`: Returns `uint256` (USDC smallest units per 1 OGCC *token*).
+*   `protocolFeePercentage()`: Returns `uint256` (scaled by 1e6, e.g., 150,000 for 15%).
+*   `rewardDistributorPercentage()`: Returns `uint256` (scaled by 1e6).
+*   `exchangeEnabled()`: Returns `bool`.
+*   `totalCreditsExchanged()`, `totalUsdcCollected()`, `totalProtocolFees()`, `totalRewardsFunded()`: Return `uint256`.
 
-### CarbonCreditToken
+### Events (Monitoring Relevant)
 
-#### Key Functions
+*   `CreditsExchanged(address indexed user, uint256 creditAmount, uint256 usdcAmount, uint256 feeAmount)`: Monitor for analytics.
+*   `RewardsPoolFunded(uint256 amount)`: Monitor to track reward pool funding.
+*   `ExchangeRateSet`, `ProtocolFeeSet`, `RewardDistributorPercentageSet`, `USDCTokenSet`, `ExchangeStatusChanged`: Monitor for changes in exchange parameters.
 
-1. **mintToTreasury**
-   - **Inputs**: 
-     - `amount`: uint256 amount of tokens to mint
-   - **Events Emitted**: 
-     - Standard ERC20 `Transfer` event from zero address to treasury
-   - **Expected Behavior**: Mints tokens to the protocol treasury
+---
 
-2. **transferFromTreasury**
-   - **Inputs**: 
-     - `to`: address of the recipient
-     - `amount`: uint256 amount to transfer
-   - **Events Emitted**: 
-     - Standard ERC20 `Transfer` event
-     - `TreasuryTransfer(address to, uint256 amount)`
-   - **Expected Behavior**: Transfers tokens from treasury to recipient
+## Administrative Functions (for Backend-managed Admin Operations)
 
-3. **retireFromTreasury**
-   - **Inputs**: 
-     - `amount`: uint256 amount to retire (burn)
-     - `reason`: string explaining the reason for retirement
-   - **Events Emitted**: 
-     - Standard ERC20 `Transfer` event to zero address
-     - `TreasuryRetirement(uint256 amount, string reason)`
-   - **Expected Behavior**: Burns tokens from treasury with a recorded reason
+If the backend service uses a wallet with administrative roles, it can call these functions. The caller (`msg.sender` which is the backend's service wallet) must have the appropriate role on the respective contract.
 
-### RewardDistributor
+### 1. `CarbonCreditToken` (Admin Ops via Backend)
+*   `setProtocolTreasury(address _newTreasury)` (Requires `DEFAULT_ADMIN_ROLE`)
+*   `grantRole(bytes32 role, address account)` / `revokeRole(bytes32 role, address account)` (Requires admin of the role being managed)
+    *   Roles to manage: `MINTER_ROLE`, `TREASURY_MANAGER_ROLE`, `PAUSER_ROLE`.
+*   `pause()` / `unpause()` (Requires `PAUSER_ROLE`)
+*   `transferFromTreasury(address to, uint256 amount)` (Requires `TREASURY_MANAGER_ROLE`)
+*   `retireFromTreasury(uint256 amount, string calldata reason)` (Requires `TREASURY_MANAGER_ROLE`)
 
-#### Key Functions
+### 2. `RewardDistributor` (Admin Ops via Backend)
+*   `setRewardRate(uint256 _rate)` (Requires `DEFAULT_ADMIN_ROLE`)
+*   `grantRole(bytes32 role, address account)` / `revokeRole(bytes32 role, address account)`
+    *   Roles to manage: `REWARD_DEPOSITOR_ROLE`, `METRIC_UPDATER_ROLE`, `PAUSER_ROLE`.
+*   `pause()` / `unpause()` (Requires `PAUSER_ROLE`)
+*   `depositRewards(uint256 amount)` (Requires `REWARD_DEPOSITOR_ROLE` and the backend service wallet must `approve` this contract to spend its USDC).
 
-1. **updateNodeContribution**
-   - **Inputs**: 
-     - `operator`: address of the node operator
-     - `contributionDelta`: uint256 change in contribution score
-     - `timestamp`: uint64 timestamp associated with this update
-   - **Events Emitted**: 
-     - `NodeContributionUpdated(address operator, uint256 newScore, uint64 timestamp)`
-   - **Expected Behavior**: Updates the operator's contribution score and reward debt
+### 3. `EnergyDataBridge` (Admin Ops via Backend)
+*   `setEmissionFactor(uint256 _factor)` (Requires `DEFAULT_ADMIN_ROLE`)
+*   `setRequiredConsensusNodes(uint256 _requiredNodes)` (Requires `DEFAULT_ADMIN_ROLE`)
+*   `setBatchProcessingDelay(uint256 _delayInSeconds)` (Requires `DEFAULT_ADMIN_ROLE`)
+*   `registerNode(bytes32 _peerId, address _operator)` (Requires `NODE_MANAGER_ROLE`)
+*   `updateNodeStatus(bytes32 _peerId, bool _isActive)` (Requires `NODE_MANAGER_ROLE`)
+*   `resolveChallenge(bytes32 batchHash, bool isUpheld)` (Requires `DEFAULT_ADMIN_ROLE`)
+*   `grantRole(bytes32 role, address account)` / `revokeRole(bytes32 role, address account)`
+    *   Roles to manage: `DATA_SUBMITTER_ROLE`, `NODE_MANAGER_ROLE`, `PAUSER_ROLE`.
+*   `pause()` / `unpause()` (Requires `PAUSER_ROLE`)
 
-2. **depositRewards**
-   - **Inputs**: 
-     - `amount`: uint256 amount of reward tokens to deposit
-   - **Events Emitted**: 
-     - `RewardsDeposited(address depositor, uint256 amount)`
-   - **Expected Behavior**: Transfers reward tokens to the contract
+### 4. `CarbonCreditExchange` (Admin Ops via Backend)
+*   `setExchangeRate(uint256 _newRate)` (Requires `RATE_SETTER_ROLE`)
+*   `setProtocolFee(uint256 _newFeePercentage)` (Requires `EXCHANGE_MANAGER_ROLE`)
+*   `setRewardDistributorPercentage(uint256 _newPercentage)` (Requires `EXCHANGE_MANAGER_ROLE`)
+*   `setUSDCToken(address _newUsdcToken)` (Requires `EXCHANGE_MANAGER_ROLE`)
+*   `setExchangeEnabled(bool _enabled)` (Requires `EXCHANGE_MANAGER_ROLE`)
+*   `grantRole(bytes32 role, address account)` / `revokeRole(bytes32 role, address account)`
+    *   Roles to manage: `RATE_SETTER_ROLE`, `EXCHANGE_MANAGER_ROLE`, `PAUSER_ROLE`.
+*   `pause()` / `unpause()` (Requires `PAUSER_ROLE`)
 
-3. **claimRewards**
-   - **Inputs**: None (caller is msg.sender)
-   - **Events Emitted**: 
-     - `RewardsClaimed(address operator, uint256 amount)`
-   - **Expected Behavior**: Transfers accrued rewards to the operator
+---
 
-4. **claimableRewards**
-   - **Inputs**: 
-     - `operator`: address of the node operator
-   - **Outputs**: 
-     - `uint256`: Amount of reward tokens claimable
-   - **Expected Behavior**: Calculates pending rewards based on contribution score and time
+## Backend Integration Testing Plan
 
-### CarbonCreditExchange
+This plan focuses on how the Rust backend developer should test their service's interactions with the smart contracts.
 
-#### Key Functions
+### A. Prerequisites for Testing
+1.  **Deployed Contracts:** All OnGrid smart contracts deployed to a test network (e.g., Anvil, Sepolia).
+2.  **Test Accounts:**
+    *   **Deployer Account:** With `DEFAULT_ADMIN_ROLE` on all contracts (as per deployment script).
+    *   **Backend Service Wallets:**
+        *   One for `DATA_SUBMITTER_ROLE` on `EnergyDataBridge`.
+        *   One for any administrative tasks the backend might perform (e.g., `NODE_MANAGER_ROLE` on `EnergyDataBridge`, or roles on other contracts if the backend automates admin functions).
+    *   **User/Node Operator Accounts:** Several test accounts with test ETH and test USDC/OGCC.
+3.  **Test Tokens:**
+    *   Mock USDC deployed or a faucet for testnet USDC.
+    *   OGCC will be minted by the `EnergyDataBridge`.
+4.  **Initial Role Setup:** Use the Deployer Account to grant necessary inter-contract roles and roles to backend service wallets as outlined in the "Admin and Inter-Contract Setup Guide".
+5.  **Backend Test Environment:** Configured to connect to the chosen test network.
 
-1. **exchangeCreditsForUSDC**
-   - **Inputs**: 
-     - `creditAmount`: uint256 amount of carbon credits to exchange
-   - **Events Emitted**: 
-     - `CreditsExchanged(address user, uint256 creditAmount, uint256 usdcAmount, uint256 feeAmount)`
-     - `RewardsPoolFunded(uint256 amount)` if rewards are funded
-   - **Expected Behavior**: Exchanges carbon credits for USDC, applying protocol fee and funding rewards
+### B. Unit/Component Tests for Backend Modules
+*   **Focus:** Test individual backend modules that interact with specific contract functions in isolation.
+*   **Method:** Use Rust's testing framework (`cargo test`). Mock blockchain interactions or use a local Anvil instance for fast feedback.
+*   **Coverage:**
+    *   **ABI Interaction:** Test functions that load ABIs and create contract instances.
+    *   **Parameter Serialization:** Verify correct serialization of Rust types (e.g., `U256`, `Address`, `Vec<u8>`, structs) to ABI-encoded data for contract calls.
+    *   **Return Value Deserialization:** Verify correct deserialization of contract call results and event data into Rust types.
+    *   **Error Code Mapping:** Test mapping of common contract error strings/signatures (from `Errors.sol`) to backend-specific errors or statuses.
 
-2. **setExchangeRate**
-   - **Inputs**: 
-     - `newRate`: uint256 new exchange rate (scaled by 1e6)
-   - **Events Emitted**: 
-     - `ExchangeRateSet(uint256 oldRate, uint256 newRate)`
-   - **Expected Behavior**: Updates the exchange rate used for credit/USDC conversion
+### C. Integration Tests: Backend <-> Smart Contracts
+*   **Focus:** Verify direct interactions between the backend service and live (testnet) smart contracts.
+*   **Method:** Use Rust's testing framework, making actual RPC calls to contracts on Anvil or a public testnet.
+*   **Coverage:**
+    1.  **View Function Calls:**
+        *   Call all relevant view functions on each contract (e.g., `EnergyDataBridge.batchSubmissionTimes`, `RewardDistributor.claimableRewards`, `CarbonCreditExchange.exchangeRate`, `CarbonCreditToken.balanceOf`).
+        *   Assert that the returned data is correctly parsed and matches expected values based on pre-set contract states.
+    2.  **Transaction Submissions (using Backend Service Wallets):**
+        *   **`EnergyDataBridge.submitEnergyDataBatch`:**
+            *   As `DATA_SUBMITTER_ROLE`: Successfully submit a batch. Verify transaction success and `EnergyDataSubmitted` event.
+            *   Attempt with incorrect/missing role: Verify transaction reverts with an access control error, and the backend handles it.
+            *   Test with invalid batch data (e.g., empty, malformed proof): Verify contract reverts and backend handles it.
+        *   **`EnergyDataBridge.processBatch` (if backend acts as keeper):**
+            *   Call after delay and no challenge: Verify success and `EnergyDataProcessed` event.
+            *   Call before delay: Verify revert.
+            *   Call if challenged and not resolved: Verify revert.
+        *   **Administrative Functions (if backend manages them):**
+            *   For each admin function the backend might call (e.g., `EnergyDataBridge.registerNode`, `CarbonCreditExchange.setExchangeRate`):
+                *   Test successful call with the correct admin role.
+                *   Test revert if called by a wallet without the specific role.
+                *   Verify event emissions.
+    3.  **Event Subscription and Processing:**
+        *   Set up backend listeners for all critical events from all contracts (e.g., `EnergyDataSubmitted`, `EnergyDataProcessed`, `BatchChallenged`, `ChallengeResolved`, `NodeContributionUpdated`, `RewardsClaimed`, `CreditsExchanged`, `RewardsPoolFunded`, `RoleGranted`, `Paused`).
+        *   Trigger these events by interacting with the contracts.
+        *   Verify the backend correctly receives, parses, and processes the event data (e.g., updates its internal database, triggers alerts, logs information).
+        *   Test filtering capabilities if used (e.g., listening for events related to specific batch hashes or users).
 
-3. **setProtocolFee**
-   - **Inputs**: 
-     - `newFeePercentage`: uint256 new fee percentage (scaled by 1e6)
-   - **Events Emitted**: 
-     - `ProtocolFeeSet(uint256 oldFee, uint256 newFee)`
-   - **Expected Behavior**: Updates the fee percentage applied on exchanges
+### D. Scenario-Based Testing (from Backend Perspective)
+*   **Focus:** Simulate key system flows involving the backend.
+*   **Method:** Orchestrate multi-step scenarios, potentially involving multiple contract interactions initiated or monitored by the backend.
+*   **Coverage - Example Scenarios:**
+    1.  **Full Data Lifecycle Driven/Monitored by Backend:**
+        *   Backend (as `DATA_SUBMITTER_ROLE`) calls `EnergyDataBridge.submitEnergyDataBatch`.
+        *   Backend monitors for `EnergyDataSubmitted` event.
+        *   Backend (as keeper or via admin trigger) calls `EnergyDataBridge.processBatch` after delay.
+        *   Backend monitors for `EnergyDataProcessed` from `EnergyDataBridge`.
+        *   Backend monitors for `Transfer` (mint) from `CarbonCreditToken`.
+        *   Backend monitors for `NodeContributionUpdated` from `RewardDistributor`.
+    2.  **Challenge Monitoring by Backend:**
+        *   Submit a batch.
+        *   Manually challenge the batch.
+        *   Backend monitors for `BatchChallenged` event and updates its internal state for the batch.
+        *   Admin resolves the challenge (test both upheld/rejected via a manual call or admin interface backed by the backend).
+        *   Backend monitors for `ChallengeResolved` and updates batch state accordingly. If rejected and processable, backend triggers `processBatch`.
+    3.  **Exchange Monitoring & Treasury Action (if applicable):**
+        *   Manually perform an OGCC-to-USDC exchange.
+        *   Backend monitors `CreditsExchanged` and `RewardsPoolFunded`.
+        *   If backend manages a treasury wallet:
+            *   Treasury wallet (via backend) `approve`s `CarbonCreditExchange`.
+            *   Treasury wallet (via backend) calls `exchangeCreditsForUSDC`.
+            *   Verify outcomes and events.
+    4.  **Node Registration/Management (if backend provides API):**
+        *   Backend (using wallet with `NODE_MANAGER_ROLE`) calls `EnergyDataBridge.registerNode`. Verify `NodeRegistered`.
+        *   Backend calls `EnergyDataBridge.updateNodeStatus`. Verify `NodeStatusUpdated`.
 
-## User Flows and Expected Behavior
+### E. Backend Error Handling and Resilience
+*   **Focus:** How the backend handles failures during contract interaction.
+*   **Coverage:**
+    *   **Contract Reverts:** Test backend response to:
+        *   Access control errors (e.g., `CallerNotDataSubmitter`, `AccessControlUnauthorizedAccount`).
+        *   State-based errors (e.g., `BatchAlreadyProcessed`, `ChallengePeriodNotOver`, `ExchangeDisabled`).
+        *   Input validation errors (e.g., `ZeroAddress`, `InvalidAmount`).
+        *   `InsufficientUSDCLiquidity` from `CarbonCreditExchange`.
+        *   `InsufficientFundsForRewards` from `RewardDistributor` (for claims).
+    *   **Network/RPC Issues:** Simulate RPC node downtime or slow responses. Verify backend retry mechanisms, timeouts, and error reporting.
+    *   **Gas Issues:** Test scenarios with insufficient gas for transactions or gas estimation failures. Verify backend handling.
+    *   **Nonce Management:** If the backend manages wallets, ensure correct nonce handling for transactions, especially with retries.
 
-### Energy Data Collection & Carbon Credit Minting Flow
+### F. Security Considerations for Backend Testing
+*   **Private Key Management:** While not a contract test, ensure the backend's key management is secure and tested.
+*   **Input Sanitization:** If the backend takes inputs that are passed to contracts, ensure they are sanitized to prevent unexpected behavior.
+*   **Replay Protection for Off-Chain Data:** For data passed to `P2PConsensusProof`, ensure the backend's off-chain consensus mechanism prevents replay attacks before data even reaches the `submitEnergyDataBatch` function. The `consensusRoundId` and `batchHash` checks in `_verifyP2PConsensus` help, but the primary P2P layer is off-chain.
 
-1. **P2P Network Data Collection**
-   - Energy data is collected from devices in the network
-   - Data is aggregated and validated by P2P nodes
-   - P2P consensus is reached through multi-signature mechanism
+---
 
-2. **Data Submission to Blockchain**
-   - The aggregated data is formatted as an array of `EnergyData` structs
-   - A consensus proof is generated with signatures from participating nodes
-   - Data is submitted to `EnergyDataBridge.submitEnergyDataBatch()`
-   - An `EnergyDataSubmitted` event is emitted with the batch hash and processing time
-
-3. **Challenge Period**
-   - The submitted batch enters a challenge period (configurable duration)
-   - During this period, any participant can call `challengeBatch()` with a reason
-   - If challenged, an admin must resolve the challenge with `resolveChallenge()`
-
-4. **Batch Processing**
-   - After the challenge period, `processBatch()` can be called with the batch hash
-   - The contract verifies no unresolved challenges exist
-   - For each valid entry in the batch:
-     - Carbon credits are calculated based on the emission factor
-     - Tokens are minted to the treasury via `CarbonCreditToken.mintToTreasury()`
-     - Node contributions are updated via `RewardDistributor.updateNodeContribution()`
-   - An `EnergyDataProcessed` event is emitted with credits minted and entries processed
-
-### Node Operator Reward Flow
-
-1. **Contribution Updates**
-   - As energy data is processed, node operators' contributions are updated
-   - Each contribution update increases their share in the reward pool
-   - The `NodeContributionUpdated` event is emitted with new scores
-
-2. **Reward Accrual**
-   - Rewards accrue over time based on contribution scores
-   - When the exchange processes carbon credit trades, a portion of fees goes to rewards
-   - Fees are sent to the RewardDistributor via `depositRewards()`
-
-3. **Reward Claiming**
-   - Node operators can check claimable rewards via `claimableRewards()`
-   - They can claim rewards by calling `claimRewards()`
-   - Upon claiming, a `RewardsClaimed` event is emitted
-
-### Carbon Credit Exchange Flow
-
-1. **Credit Exchange**
-   - Users with carbon credits call `exchangeCreditsForUSDC()` with an amount
-   - The contract calculates USDC amount based on the exchange rate
-   - Protocol fee is deducted from the USDC amount
-   - A portion of the fee is sent to the reward distributor
-   - User receives net USDC amount after fees
-   - A `CreditsExchanged` event is emitted with transaction details
-
-2. **Exchange Parameter Updates**
-   - Admin can update exchange rate via `setExchangeRate()`
-   - Admin can update fee percentage via `setProtocolFee()`
-   - Admin can update reward percentage via `setRewardDistributorPercentage()`
-   - Each parameter update emits a corresponding event
-
-## Important Implementation Notes
-
-1. **Consensus Mechanism**
-   - The P2P network must implement a robust consensus mechanism
-   - Signatures from participating nodes must be collected and aggregated
-   - The number of signatures must meet the `requiredConsensusNodes` threshold
-
-2. **Batch Processing Timing**
-   - You must store batch hashes and their processing times
-   - Implement a background job to process batches after their challenge period
-   - Track processing status to avoid duplicate processing
-
-3. **Error Handling**
-   - Implement proper error handling for all contract calls
-   - Use retry mechanisms for temporary failures (gas price issues, etc.)
-   - Log all errors for troubleshooting
-
-4. **Event Monitoring**
-   - Set up listeners for all relevant contract events
-   - Update your system state based on these events
-   - Implement proper error handling for event processing
-
-5. **Security Considerations**
-   - Protect private keys used for contract interactions
-   - Validate all data before submitting to the blockchain
-   - Implement proper access controls for administrative functions 
+This guide, along with the contract ABIs, should provide a solid foundation for the Rust backend developer. They should always consult the ABIs for exact function signatures, event names, and parameter types.

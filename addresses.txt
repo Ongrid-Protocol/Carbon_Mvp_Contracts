@@ -1,0 +1,19 @@
+== Logs ==
+  Protocol treasury address: 0x0a1978f4CeC6AfA754b6Fa11b7D141e529b22741    
+  USDC token address: 0x145aA83e713BBc200aB08172BE9e347442a6c33E
+  Deploying CarbonCreditToken...
+  CarbonCreditToken deployed at: 0xd3D95A6e2a2Ef88F92fb701A40EB358Be2c9be7d
+  Deploying RewardDistributor...
+  RewardDistributor deployed at: 0x28e9A8c3da8a05E415cb253A7Faf9Ffe9e195124
+  Deploying EnergyDataBridge...
+  EnergyDataBridge deployed at: 0x2dCfA53aEfE9F62D4fF13281e72ECE6203D7149A
+  Deploying CarbonCreditExchange...
+  CarbonCreditExchange deployed at: 0x93b911e9955C4713249bD3e503690a47172CbC55
+  ----- Deployment Complete -----
+  Copy these addresses for the SetupRoles script:
+
+  
+  CarbonCreditToken: 0xd3D95A6e2a2Ef88F92fb701A40EB358Be2c9be7d
+  RewardDistributor: 0x28e9A8c3da8a05E415cb253A7Faf9Ffe9e195124
+  EnergyDataBridge: 0x2dCfA53aEfE9F62D4fF13281e72ECE6203D7149A
+  CarbonCreditExchange: 0x93b911e9955C4713249bD3e503690a47172CbC55

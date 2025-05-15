@@ -46,4 +46,5 @@ library Errors {
     error TransferFailed();
     error ExchangeDisabled();
     error InvalidTokenAddress();
+    error InsufficientUSDCLiquidity();
 }

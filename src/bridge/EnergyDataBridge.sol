@@ -413,20 +413,49 @@ contract EnergyDataBridge is AccessControl, Pausable, ReentrancyGuard, UUPSUpgra
         view
         returns (bool)
     {
-        // Ensure enough nodes participated
+        // Ensure enough nodes participated as claimed by the proof
         if (consensusProof.participatingNodeCount < requiredConsensusNodes) {
             return false;
         }
 
-        // Verify that consensus hash matches data batch
-        bytes32 expectedHash = keccak256(abi.encode(consensusProof.consensusRoundId, keccak256(abi.encode(dataBatch))));
+        // Verify that the consensusResultHash in the proof matches the provided dataBatch and consensusRoundId.
+        // This ensures the proof corresponds to the specific data being submitted for this round.
+        bytes32 batchDataHash = keccak256(abi.encode(dataBatch));
+        bytes32 expectedConsensusResultHash = keccak256(abi.encode(consensusProof.consensusRoundId, batchDataHash));
 
-        if (expectedHash != consensusProof.consensusResultHash) {
+        if (expectedConsensusResultHash != consensusProof.consensusResultHash) {
             return false;
         }
 
-        // For MVP, we implement a simplified verification
-        // In production, this would validate multi-signatures against registered nodes
+        // --- CRITICAL SECURITY TODO: Implement Full Multi-Signature Verification ---
+        // The following is a placeholder and NOT SECURE FOR PRODUCTION.
+        // A robust implementation must:
+        // 1. Define how signer keys are associated with `registeredNodes` (e.g., node's `operator` address or a separate signing key).
+        // 2. Parse `consensusProof.multiSignature`. This could be an aggregated signature (e.g., BLS)
+        //    or a list of individual ECDSA signatures.
+        // 3. For each individual signature (or the aggregated one):
+        //    a. Recover the signer's address using `expectedConsensusResultHash` as the message digest.
+        //       Example for ECDSA: `address signer = expectedConsensusResultHash.toEthSignedMessageHash().recover(signatureV, signatureR, signatureS);`
+        //    b. Verify that the recovered signer address corresponds to an active, registered node from `registeredNodes`.
+        //    c. Ensure that the address is not a duplicate if counting unique signers.
+        // 4. Confirm that the count of unique, valid signers is >= `requiredConsensusNodes`.
+        //
+        // The current `P2PConsensusProof.multiSignature` (bytes) and `participatingNodeCount` (uint256)
+        // are inputs. The `registeredNodes` mapping (bytes32 peerId => RegisteredNode) exists.
+
+        // Placeholder check: if nodes are claimed to have participated, a signature payload must exist.
+        // This does NOT verify the signature's validity or origin.
+        if (consensusProof.participatingNodeCount > 0 && consensusProof.multiSignature.length == 0) {
+            // If participation is claimed, but no signature data is provided, it's invalid.
+            return false;
+        }
+        
+        // If requiredConsensusNodes is 0 (prevented by constructor and setter checks) and participatingNodeCount is 0,
+        // this logic branch would pass. However, requiredConsensusNodes is always > 0.
+
+        // Returning true here implies that if the structural checks pass and some signature bytes
+        // are present (if participation > 0), the consensus is considered valid for MVP/placeholder purposes.
+        // THIS IS A MAJOR SECURITY RISK IN A PRODUCTION SYSTEM.
         return true;
     }
 
