@@ -30,6 +30,14 @@ interface ICarbonCreditToken {
     function mintToTreasury(uint256 amount) external;
 
     /**
+     * @dev Mints `amount` tokens and sends them to a specified `to` address.
+     * MUST only be callable by the MINTER_ROLE.
+     * @param to The address to mint tokens to.
+     * @param amount The amount of tokens to mint.
+     */
+    function mint(address to, uint256 amount) external;
+
+    /**
      * @dev Transfers tokens from the treasury to a specified address.
      * MUST only be callable by the TREASURY_MANAGER_ROLE.
      * @param to The recipient address.

@@ -101,6 +101,17 @@ contract CarbonCreditToken is
     }
 
     /**
+     * @dev Mints `amount` tokens and sends them to a specified `to` address.
+     * Requires the caller to have the MINTER_ROLE.
+     * @param to The address to mint tokens to.
+     * @param amount The amount of tokens to mint.
+     */
+    function mint(address to, uint256 amount) external virtual whenNotPaused onlyMinter {
+        if (to == address(0)) revert Errors.ZeroAddress();
+        _mint(to, amount);
+    }
+
+    /**
      * @dev Transfers tokens from the treasury to a specified address.
      * Can only be called by addresses with TREASURY_MANAGER_ROLE.
      * @param to The recipient address.
