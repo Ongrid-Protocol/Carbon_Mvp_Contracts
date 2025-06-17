@@ -5,6 +5,7 @@ import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {ICarbonCreditToken} from "../interfaces/ICarbonCreditToken.sol";
 import {Errors} from "../common/Errors.sol";
 
@@ -15,7 +16,7 @@ import {Errors} from "../common/Errors.sol";
  * A portion of the minted credits is sent to the node operator as a reward.
  * Pausable and upgradeable (UUPS).
  */
-contract EnergyDataBridge is AccessControl, Pausable, ReentrancyGuard, UUPSUpgradeable {
+contract EnergyDataBridge is Initializable, AccessControl, Pausable, ReentrancyGuard, UUPSUpgradeable {
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
     bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
     bytes32 public constant DATA_SUBMITTER_ROLE = keccak256("DATA_SUBMITTER_ROLE");
@@ -105,18 +106,19 @@ contract EnergyDataBridge is AccessControl, Pausable, ReentrancyGuard, UUPSUpgra
     }
 
     /**
-     * @dev Sets up the contract, initializes dependencies, and grants initial roles.
+     * @dev Initializes the contract, sets up dependencies, and grants initial roles.
+     * This function replaces the constructor to be compatible with UUPS proxies.
      * @param _creditToken Address of the CarbonCreditToken contract.
      * @param _initialAdmin Address to grant DEFAULT_ADMIN_ROLE, PAUSER_ROLE, UPGRADER_ROLE, and FACTOR_MANAGER_ROLE.
      * @param _initialSubmitter Address to grant DATA_SUBMITTER_ROLE.
      * @param _initialOperatorRewardBps The initial percentage of credits for operators (in BPS).
      */
-    constructor(
+    function initialize(
         address _creditToken,
         address _initialAdmin,
         address _initialSubmitter,
         uint256 _initialOperatorRewardBps
-    ) {
+    ) public initializer {
         if (_creditToken == address(0)) revert Errors.ZeroAddress();
         if (_initialAdmin == address(0)) revert Errors.ZeroAddress();
         if (_initialSubmitter == address(0)) revert Errors.ZeroAddress();
@@ -194,6 +196,7 @@ contract EnergyDataBridge is AccessControl, Pausable, ReentrancyGuard, UUPSUpgra
         uint256 batchTotalCreditsMinted = 0;
         uint256 batchTotalTreasuryCredits = 0;
         uint256 numEntries = dataBatch.length;
+        uint256 entriesProcessed = 0;
         uint256 rewardBps = operatorRewardBps;
 
         for (uint256 i = 0; i < numEntries; ++i) {
@@ -212,6 +215,8 @@ contract EnergyDataBridge is AccessControl, Pausable, ReentrancyGuard, UUPSUpgra
             if (creditsToMint == 0) {
                 continue;
             }
+
+            entriesProcessed++;
 
             batchTotalCreditsMinted += creditsToMint;
 
@@ -234,7 +239,7 @@ contract EnergyDataBridge is AccessControl, Pausable, ReentrancyGuard, UUPSUpgra
 
         processedBatchHashes[batchHash] = true;
 
-        emit EnergyDataProcessed(batchHash, batchTotalCreditsMinted, numEntries);
+        emit EnergyDataProcessed(batchHash, batchTotalCreditsMinted, entriesProcessed);
     }
 
     /**

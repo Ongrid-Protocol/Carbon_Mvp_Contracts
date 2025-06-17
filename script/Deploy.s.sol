@@ -20,6 +20,9 @@ contract DeployScript is Script {
     uint256 private constant INITIAL_OPERATOR_REWARD_BPS = 8000; // 80%
 
     function run() external {
+        // Pre-flight check
+        require(INITIAL_OPERATOR_REWARD_BPS <= 10000, "INVALID_REWARD_BPS");
+
         // Start broadcasting transactions
         vm.startBroadcast();
         
@@ -40,14 +43,19 @@ contract DeployScript is Script {
         console2.log("CarbonCreditToken deployed at:", address(creditToken));
 
         // 2. Deploy EnergyDataBridge
-        console2.log("Deploying EnergyDataBridge...");
-        energyDataBridge = new EnergyDataBridge(
-            address(creditToken),           // creditToken
-            deployer,                       // initialAdmin
-            deployer,                       // initialSubmitter
-            INITIAL_OPERATOR_REWARD_BPS     // initialOperatorRewardBps
+        console2.log("Deploying EnergyDataBridge implementation...");
+        energyDataBridge = new EnergyDataBridge();
+        console2.log("EnergyDataBridge implementation deployed at:", address(energyDataBridge));
+
+        // Initialize EnergyDataBridge
+        console2.log("Initializing EnergyDataBridge...");
+        energyDataBridge.initialize(
+            address(creditToken), // creditToken
+            deployer, // initialAdmin
+            deployer, // initialSubmitter
+            INITIAL_OPERATOR_REWARD_BPS // initialOperatorRewardBps
         );
-        console2.log("EnergyDataBridge deployed at:", address(energyDataBridge));
+        console2.log("EnergyDataBridge initialized.");
 
         // DO NOT attempt to grant roles in this script
         // We'll do that in a separate script
